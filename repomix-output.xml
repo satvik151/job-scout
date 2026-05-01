@@ -1,0 +1,540 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+backend/digest.py
+backend/main.py
+backend/scorer.py
+backend/scraper.py
+README.md
+requirements.txt
+test_scorer_run.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="test_scorer_run.py">
+"""
+Quick test run of scorer.py to verify Groq API integration.
+"""
+import logging
+import sys
+from pathlib import Path
+
+# Add backend to path
+sys.path.insert(0, str(Path(__file__).parent / "backend"))
+
+from dotenv import load_dotenv
+from scorer import score_jobs
+
+# Load environment variables
+load_dotenv(Path(__file__).parent / "backend" / ".env")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# Sample profile
+profile_text = """
+Software Engineer with 5 years of experience in Python and backend development.
+Proficient in FastAPI, PostgreSQL, AWS, and Docker.
+Experienced with REST APIs and microservices architecture.
+Looking for senior backend or full-stack roles.
+"""
+
+# Sample jobs to score
+test_jobs = [
+    {
+        "title": "Senior Backend Engineer",
+        "company": "TechCorp",
+        "description": "Build and maintain scalable backend services using Python and FastAPI. Work with AWS, PostgreSQL, and Docker in a microservices environment.",
+        "skills": ["Python", "FastAPI", "PostgreSQL", "AWS", "Docker"],
+        "url": "https://example.com/job1",
+    },
+    {
+        "title": "Junior Frontend Developer",
+        "company": "WebStudio",
+        "description": "Create responsive web interfaces using React and Vue.js. Work with modern CSS frameworks.",
+        "skills": ["React", "Vue.js", "CSS", "JavaScript"],
+        "url": "https://example.com/job2",
+    },
+    {
+        "title": "Full Stack Developer",
+        "company": "StartupXYZ",
+        "description": "Build full-stack applications with FastAPI backend and React frontend. Deploy to AWS.",
+        "skills": ["Python", "FastAPI", "React", "PostgreSQL", "AWS"],
+        "url": "https://example.com/job3",
+    },
+]
+
+print("=" * 70)
+print("TESTING job-scout SCORER")
+print("=" * 70)
+print(f"\nProfile: {profile_text[:80]}...")
+print(f"\nScoring {len(test_jobs)} test jobs...\n")
+
+# Score jobs
+results = score_jobs(test_jobs, profile_text)
+
+# Display results
+print("\n" + "=" * 70)
+print("RESULTS (sorted by score, descending)")
+print("=" * 70)
+
+for idx, job in enumerate(results, 1):
+    print(f"\n{idx}. {job['title']} at {job['company']}")
+    print(f"   Score: {job.get('score', 'N/A')}/10.0")
+    print(f"   Skills Match: {job.get('skills_match_pct', 'N/A')}%")
+    print(f"   Seniority Fit: {job.get('seniority_fit', 'N/A')}")
+    print(f"   Missing Skills: {job.get('missing_skills', [])}")
+    print(f"   Reason: {job.get('reason', 'N/A')}")
+
+print("\n" + "=" * 70)
+print(f"Test complete. Top match: {results[0]['title']} (score: {results[0].get('score', 'N/A')})")
+print("=" * 70)
+</file>
+
+<file path=".gitignore">
+venv/
+.venv/
+.env
+__pycache__/
+*.pyc
+.DS_Store
+</file>
+
+<file path="backend/digest.py">
+
+</file>
+
+<file path="backend/main.py">
+import logging
+
+from fastapi import FastAPI, HTTPException, Query
+
+from scraper import scrape_internshala_jobs
+from scorer import score_jobs
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI()
+
+# TODO: replace with real resume text or load from file
+CANDIDATE_PROFILE = """
+Software Engineer with experience in Python, FastAPI, SQL, and cloud platforms.
+Interested in backend and full-stack roles.
+"""
+
+MAX_JOBS = 10
+
+
+@app.get("/")
+def root():
+	return {"status": "job-scout is alive"}
+
+
+@app.get("/jobs")
+def get_jobs(pages: int = Query(default=2, ge=1, le=10)):
+	logger.info("/jobs endpoint called with pages=%s", pages)
+
+	jobs = scrape_internshala_jobs(max_pages=pages)
+	total_scraped = len(jobs)
+	logger.info("Total jobs scraped: %s", total_scraped)
+
+	if not jobs:
+		logger.warning("Scraper returned 0 jobs")
+		return {"total_scraped": 0, "returned": 0, "jobs": []}
+
+	try:
+		logger.info("Starting job scoring")
+		scored_jobs = score_jobs(jobs, CANDIDATE_PROFILE)
+		logger.info("Finished job scoring")
+	except Exception as e:
+		logger.error("Scoring failed: %s", e)
+		raise HTTPException(status_code=500, detail="Scoring failed — check logs")
+
+	top_jobs = scored_jobs[:MAX_JOBS]
+	return {
+		"total_scraped": total_scraped,
+		"returned": len(top_jobs),
+		"jobs": top_jobs,
+	}
+</file>
+
+<file path="backend/scorer.py">
+import json
+import logging
+import os
+import re
+from pathlib import Path
+
+from dotenv import load_dotenv
+from groq import Groq
+
+# Load .env from the backend directory
+load_dotenv(Path(__file__).parent / ".env")
+
+logger = logging.getLogger(__name__)
+
+# Create Groq client once at module level to reuse across function calls
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"), timeout=30.0)
+
+
+def _failed_score(job: dict) -> dict:
+	"""
+	Return a job with safe default failure values for all score fields.
+	"""
+	return {
+		**job,
+		"score": 0.0,
+		"skills_match_pct": 0,
+		"missing_skills": [],
+		"seniority_fit": "good fit",
+		"reason": "scoring failed",
+	}
+
+
+def validate_score_data(data: dict) -> dict:
+	"""
+	Validate and clamp score data returned from LLM.
+	
+	Ensures all required keys exist with safe defaults and valid ranges.
+	"""
+	required_keys = {
+		"score": 0.0,
+		"skills_match_pct": 0,
+		"missing_skills": [],
+		"seniority_fit": "good fit",
+		"reason": "scoring failed",
+	}
+	
+	validated = {}
+	
+	# Clamp score to 0.0–10.0
+	score = data.get("score", required_keys["score"])
+	try:
+		score = float(score)
+		validated["score"] = min(max(score, 0.0), 10.0)
+	except (ValueError, TypeError):
+		validated["score"] = required_keys["score"]
+	
+	# Clamp skills_match_pct to 0–100
+	skills_match = data.get("skills_match_pct", required_keys["skills_match_pct"])
+	try:
+		skills_match = int(skills_match)
+		validated["skills_match_pct"] = min(max(skills_match, 0), 100)
+	except (ValueError, TypeError):
+		validated["skills_match_pct"] = required_keys["skills_match_pct"]
+	
+	# Ensure missing_skills is a list
+	missing_skills = data.get("missing_skills", required_keys["missing_skills"])
+	if isinstance(missing_skills, list):
+		validated["missing_skills"] = missing_skills
+	else:
+		validated["missing_skills"] = required_keys["missing_skills"]
+	
+	# Validate seniority_fit is one of three valid values
+	valid_fits = {"good fit", "overqualified", "underqualified"}
+	seniority_fit = data.get("seniority_fit", required_keys["seniority_fit"])
+	if seniority_fit in valid_fits:
+		validated["seniority_fit"] = seniority_fit
+	else:
+		validated["seniority_fit"] = required_keys["seniority_fit"]
+	
+	# Include reason as-is, fallback to default if missing
+	reason = data.get("reason", required_keys["reason"])
+	validated["reason"] = str(reason) if reason else required_keys["reason"]
+	
+	return validated
+
+
+def score_job(job: dict, profile_text: str) -> dict:
+	"""
+	Score a single job posting against a candidate profile using Groq API.
+	
+	Args:
+		job: Dictionary with keys: title, company, description, skills
+		profile_text: Candidate's profile/resume text
+	
+	Returns:
+		Original job dict merged with scoring fields: score, skills_match_pct,
+		missing_skills, seniority_fit, reason
+	"""
+	prompt = f"""Analyze this job posting against the candidate's profile.
+Return ONLY valid JSON (no markdown, no backticks, no explanation).
+
+JOB POSTING:
+Title: {job.get('title', '')}
+Company: {job.get('company', '')}
+Description: {job.get('description', '')}
+Required Skills: {', '.join(job.get('skills', []))}
+
+CANDIDATE PROFILE:
+{profile_text}
+
+Return strictly valid JSON only. Do not include markdown, backticks, code fences, or any explanation.
+Your entire response must be parseable by json.loads()
+
+JSON must have exactly these fields:
+{{
+    "score": <float 0.0 to 10.0>,
+    "skills_match_pct": <integer 0 to 100>,
+    "missing_skills": <list of strings>,
+    "seniority_fit": <"good fit" or "overqualified" or "underqualified">,
+    "reason": <string under 100 words>
+}}"""
+
+	try:
+		message = groq_client.chat.completions.create(
+			model="llama-3.1-8b-instant",
+			messages=[{"role": "user", "content": prompt}],
+			temperature=0.2,
+			max_tokens=300,
+		)
+		response_text = message.choices[0].message.content
+	except Exception as e:
+		logger.error(f"Groq API error for job '{job.get('title')}': {e}")
+		return _failed_score(job)
+
+	# Try parsing as-is first
+	try:
+		score_data = json.loads(response_text)
+	except json.JSONDecodeError:
+		# Fallback: strip markdown fences with stronger regex
+		logger.debug(f"JSON parse failed, attempting markdown strip for job '{job.get('title')}'")
+		cleaned = re.sub(r'```(?:json)?\s*|\s*```', '', response_text).strip()
+		try:
+			score_data = json.loads(cleaned)
+		except json.JSONDecodeError as e:
+			logger.error(
+				f"Failed to parse score data for job '{job.get('title')}' "
+				f"even after markdown strip: {e}"
+			)
+			return _failed_score(job)
+
+	# Validate and clamp all score fields
+	validated_data = validate_score_data(score_data)
+	return {**job, **validated_data}
+
+
+def score_jobs(jobs: list, profile_text: str) -> list:
+	"""
+	Score a list of jobs and return sorted by score descending.
+	
+	Args:
+		jobs: List of job dictionaries
+		profile_text: Candidate's profile/resume text
+	
+	Returns:
+		List of jobs with scoring fields, sorted by score (descending)
+	"""
+	logger.info(f"Starting to score {len(jobs)} jobs")
+	scored_jobs = []
+
+	for idx, job in enumerate(jobs, start=1):
+		job_title = job.get("title", "Unknown")
+		logger.info(f"Scoring job {idx}/{len(jobs)}: {job_title} at {job.get('company', 'Unknown')}")
+		scored_job = score_job(job, profile_text)
+		scored_jobs.append(scored_job)
+
+	# Sort by score descending
+	scored_jobs.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+	logger.info(f"Scoring complete. Sorted {len(scored_jobs)} jobs by score")
+	return scored_jobs
+
+
+if __name__ == "__main__":
+	logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+	sample_profile = """
+	Software Engineer with 5 years experience in Python and JavaScript.
+	Skilled in FastAPI, React, PostgreSQL, and AWS.
+	Looking for backend or full-stack roles.
+	"""
+
+	sample_jobs = [
+		{
+			"title": "Backend Engineer",
+			"company": "Tech Startup",
+			"description": "Build scalable APIs using FastAPI and PostgreSQL",
+			"skills": ["Python", "FastAPI", "PostgreSQL"],
+			"url": "https://example.com/job1",
+		},
+		{
+			"title": "Frontend Developer",
+			"company": "Web Agency",
+			"description": "Build responsive web apps with React and Vue",
+			"skills": ["React", "Vue", "CSS", "JavaScript"],
+			"url": "https://example.com/job2",
+		},
+	]
+
+	results = score_jobs(sample_jobs, sample_profile)
+	print(f"\nTop job: {results[0]['title']} - Score: {results[0].get('score', 'N/A')}")
+</file>
+
+<file path="backend/scraper.py">
+import logging
+import time
+
+import requests
+from bs4 import BeautifulSoup
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+
+def scrape_internshala_jobs(max_pages=5):
+	logger.info("Starting Internshala jobs scraper")
+	headers = {
+		"User-Agent": (
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+			"AppleWebKit/537.36 (KHTML, like Gecko) "
+			"Chrome/124.0.0.0 Safari/537.36"
+		)
+	}
+
+	all_jobs = []
+	seen_urls = set()
+
+	for page in range(1, max_pages + 1):
+		# Page 1 uses /jobs/, page 2+ use /jobs/page-2, /jobs/page-3, etc.
+		if page == 1:
+			url = "https://internshala.com/jobs/"
+		else:
+			url = f"https://internshala.com/jobs/page-{page}/"
+
+		logger.info(f"Fetching page {page}: {url}")
+
+		try:
+			response = requests.get(url, headers=headers, timeout=10)
+			if response.status_code != 200:
+				logger.warning(
+					f"Page {page} returned status {response.status_code}, skipping"
+				)
+				continue
+
+			soup = BeautifulSoup(response.text, "html.parser")
+			page_jobs = []
+
+			for card in soup.find_all("div", class_="internship_meta"):
+				try:
+					title_link = card.find("a", class_="job-title-href")
+					company_tag = card.find("p", class_="company-name")
+					location_link = card.find("p", class_="locations")
+					description_tag = card.find("div", class_="about_job")
+					skill_tags = card.find_all("div", class_="job_skill")
+
+					job = {
+						"title": title_link.get_text(strip=True) if title_link else "",
+						"url": (
+							f"https://internshala.com{title_link.get('href')}"
+							if title_link and title_link.get("href")
+							else ""
+						),
+						"company": company_tag.get_text(strip=True) if company_tag else "",
+						"location": (
+							location_link.find("a").get_text(strip=True)
+							if location_link and location_link.find("a")
+							else ""
+						),
+						"description": (
+							description_tag.get_text(strip=True)
+							if description_tag
+							else ""
+						),
+						"skills": [
+							skill.get_text(strip=True) for skill in skill_tags
+						],
+					}
+
+					# Deduplicate by URL
+					if job["url"] and job["url"] not in seen_urls:
+						all_jobs.append(job)
+						seen_urls.add(job["url"])
+						page_jobs.append(job)
+
+				except Exception as e:
+					logger.warning(f"Error parsing job card: {e}")
+					continue
+
+			logger.info(f"Page {page}: Found {len(page_jobs)} new jobs")
+
+			# Rate limiting: wait 1 second before next page request
+			if page < max_pages:
+				time.sleep(1)
+
+		except requests.RequestException as e:
+			logger.error(f"Request error on page {page}: {e}")
+			continue
+
+	logger.info(f"Scrape complete. Total jobs found: {len(all_jobs)}")
+	return all_jobs
+
+
+if __name__ == "__main__":
+	jobs = scrape_internshala_jobs(max_pages=2)
+	print(f"\nFound {len(jobs)} jobs total")
+	if jobs:
+		print("First job:")
+		print(jobs[0])
+	else:
+		print("No jobs found")
+</file>
+
+<file path="README.md">
+
+</file>
+
+<file path="requirements.txt">
+fastapi
+uvicorn
+requests
+beautifulsoup4
+python-dotenv
+groq
+</file>
+
+</files>
