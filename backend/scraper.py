@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def scrape_internshala_jobs(max_pages=5):
+	start_time = time.perf_counter()
 	logger.info("Starting Internshala jobs scraper")
 	headers = {
 		"User-Agent": (
@@ -29,6 +30,7 @@ def scrape_internshala_jobs(max_pages=5):
 			url = f"https://internshala.com/jobs/page-{page}/"
 
 		logger.info(f"Fetching page {page}: {url}")
+		page_start = time.perf_counter()
 
 		try:
 			response = requests.get(url, headers=headers, timeout=10)
@@ -82,7 +84,8 @@ def scrape_internshala_jobs(max_pages=5):
 					logger.warning(f"Error parsing job card: {e}")
 					continue
 
-			logger.info(f"Page {page}: Found {len(page_jobs)} new jobs")
+			page_elapsed = time.perf_counter() - page_start
+			logger.info(f"Page {page}: Found {len(page_jobs)} new jobs (took {page_elapsed:.2f}s)")
 
 			# Rate limiting: wait 1 second before next page request
 			if page < max_pages:
@@ -92,7 +95,10 @@ def scrape_internshala_jobs(max_pages=5):
 			logger.error(f"Request error on page {page}: {e}")
 			continue
 
-	logger.info(f"Scrape complete. Total jobs found: {len(all_jobs)}")
+	elapsed = time.perf_counter() - start_time
+	logger.info(f"Scrape complete. Total jobs found: {len(all_jobs)} (took {elapsed:.2f}s)")
+	if elapsed > 5.0:
+		logger.warning(f"Scraper took too long: {elapsed:.2f}s (>5s)")
 	return all_jobs
 
 

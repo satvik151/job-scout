@@ -6,8 +6,12 @@ from dotenv import load_dotenv
 
 try:
     from resend import Resend
-except ImportError:
+except Exception:
     Resend = None
+
+# fallback import for HTTP send if resend lib is not available
+import requests
+
 
 logger = logging.getLogger(__name__)
 
@@ -91,28 +95,49 @@ def send_digest(recipient_email: str, body: str, job_count: int) -> bool:
         logger.error("SENDER_EMAIL not set in environment variables")
         return False
     
-    if Resend is None:
-        logger.error("resend library not installed. Install with: pip install resend")
-        return False
-    
+    # Try using the official resend library if available
+    if Resend is not None:
+        try:
+            client = Resend(api_key=api_key)
+            subject = f"Job Scout — {job_count} jobs for you today"
+            response = client.emails.send(
+                {
+                    "from": sender_email,
+                    "to": recipient_email,
+                    "subject": subject,
+                    "text": body,
+                }
+            )
+            logger.info(f"Digest email sent to {recipient_email} (via resend lib)")
+            return True
+        except Exception as e:
+            logger.error(f"Resend library send failed: {e}")
+            # fall through to HTTP fallback
+
+    # Fallback: call Resend API directly via requests with timeout
     try:
-        client = Resend(api_key=api_key)
-        subject = f"Job Scout — {job_count} jobs for you today"
-        
-        response = client.emails.send(
-            {
-                "from": sender_email,
-                "to": recipient_email,
-                "subject": subject,
-                "text": body,
-            }
-        )
-        
-        logger.info(f"Digest email sent to {recipient_email}")
-        return True
-    
+        api_url = "https://api.resend.com/emails"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "from": sender_email,
+            "to": recipient_email,
+            "subject": f"Job Scout — {job_count} jobs for you today",
+            "text": body,
+        }
+        resp = requests.post(api_url, json=payload, headers=headers, timeout=15)
+        if resp.status_code >= 200 and resp.status_code < 300:
+            logger.info(f"Digest email sent to {recipient_email} (via HTTP fallback)")
+            return True
+        else:
+            logger.error(
+                f"Resend HTTP fallback failed: status={resp.status_code} body={resp.text}"
+            )
+            return False
     except Exception as e:
-        logger.error(f"Failed to send digest email to {recipient_email}: {str(e)}")
+        logger.exception(f"Failed to send digest email via HTTP fallback: {e}")
         return False
 
 
