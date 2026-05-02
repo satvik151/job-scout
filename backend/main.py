@@ -48,15 +48,6 @@ app.add_middleware(
 	allow_headers=["*"],
 )
 
-# Debug: log that env vars are loaded
-logger.info(f"GROQ_API_KEY loaded: {bool(os.getenv('GROQ_API_KEY'))}")
-logger.info(f"RESEND_API_KEY loaded: {bool(os.getenv('RESEND_API_KEY'))}")
-logger.info(f"SENDER_EMAIL loaded: {bool(os.getenv('SENDER_EMAIL'))}")
-logger.info(f"DIGEST_EMAIL loaded: {bool(os.getenv('DIGEST_EMAIL'))}")
-
-# ENV sanity-check at startup
-logger.info(f"ENV CHECK: GROQ_API_KEY present = {bool(os.getenv('GROQ_API_KEY'))}")
-
 # Startup validation: check required env vars and warn if missing
 REQUIRED_ENVS = [
 	"GROQ_API_KEY",
@@ -67,10 +58,6 @@ REQUIRED_ENVS = [
 missing = [name for name in REQUIRED_ENVS if not os.getenv(name)]
 if missing:
 	logger.warning("Missing environment variables: %s", missing)
-	# Provide default for DIGEST_EMAIL if not set
-	if "DIGEST_EMAIL" in missing:
-		os.environ.setdefault("DIGEST_EMAIL", "satvikislegendary@gmail.com")
-		logger.info("Defaulted DIGEST_EMAIL to satvikislegendary@gmail.com")
 
 # TODO: replace with real resume text or load from file
 CANDIDATE_PROFILE = """
@@ -122,11 +109,23 @@ def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(g
 		return {"total_scraped": total_scraped, "returned": 0, "jobs": []}
 
 	# Convert DB rows back to dicts for scorer — parse JSON fields
+	# Use explicit field extraction to avoid leaking SQLAlchemy's _sa_instance_state
 	new_jobs_as_dicts = [
 		{
-			**j.__dict__,
+			"id": j.id,
+			"title": j.title,
+			"company": j.company,
+			"url": j.url,
+			"url_hash": j.url_hash,
+			"description": j.description,
 			"skills": json.loads(j.skills or "[]"),
-			"missing_skills": json.loads(j.missing_skills or "[]")
+			"missing_skills": json.loads(j.missing_skills or "[]"),
+			"score": j.score,
+			"skills_match_pct": j.skills_match_pct,
+			"seniority_fit": j.seniority_fit,
+			"reason": j.reason,
+			"scraped_at": j.scraped_at,
+			"is_new": j.is_new,
 		}
 		for j in new_db_jobs
 	]
@@ -168,7 +167,9 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 	if payload and payload.recipient_email:
 		recipient = payload.recipient_email
 	else:
-		recipient = os.getenv("DIGEST_EMAIL", "satvikislegendary@gmail.com")
+		recipient = os.getenv("DIGEST_EMAIL")
+		if not recipient:
+			raise HTTPException(status_code=500, detail="DIGEST_EMAIL not configured")
 
 	logger.info("/send-digest called. Recipient: %s", recipient)
 
@@ -195,11 +196,23 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 		return {"sent": False, "recipient": recipient, "jobs_in_digest": 0}
 
 	# Convert DB rows to dicts for scorer
+	# Use explicit field extraction to avoid leaking SQLAlchemy's _sa_instance_state
 	jobs_to_score = [
 		{
-			**j.__dict__,
+			"id": j.id,
+			"title": j.title,
+			"company": j.company,
+			"url": j.url,
+			"url_hash": j.url_hash,
+			"description": j.description,
 			"skills": json.loads(j.skills or "[]"),
-			"missing_skills": json.loads(j.missing_skills or "[]")
+			"missing_skills": json.loads(j.missing_skills or "[]"),
+			"score": j.score,
+			"skills_match_pct": j.skills_match_pct,
+			"seniority_fit": j.seniority_fit,
+			"reason": j.reason,
+			"scraped_at": j.scraped_at,
+			"is_new": j.is_new,
 		}
 		for j in new_db_jobs
 	]
