@@ -8,19 +8,30 @@ from groq import Groq
 logger = logging.getLogger(__name__)
 
 # Temporary debug limit: when >0 only the first N jobs are scored
-DEBUG_LIMIT = 3
+# Loaded from environment variable, default to 0 (no limit)
+DEBUG_LIMIT = int(os.getenv("DEBUG_LIMIT", "0"))
+
+# Module-level cache for Groq client (lazy initialization)
+_groq_client = None
 
 
 def get_groq_client():
-    """Lazily create a Groq client using the environment-provided API key.
+    """Lazily create and cache a Groq client using the environment-provided API key.
 
     Raises:
         ValueError: if `GROQ_API_KEY` is not present in the environment.
     """
+    global _groq_client
+    
+    if _groq_client is not None:
+        return _groq_client
+    
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise ValueError("GROQ_API_KEY not loaded")
-    return Groq(api_key=api_key, timeout=30.0)
+    
+    _groq_client = Groq(api_key=api_key, timeout=30.0)
+    return _groq_client
 
 
 def _failed_score(job: dict) -> dict:

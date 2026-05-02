@@ -32,6 +32,7 @@ if env_path.exists():
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Body
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .scraper import scrape_internshala_jobs
@@ -41,6 +42,15 @@ from .digest import format_digest, send_digest
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Enable CORS for frontend to call this API from browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Debug: log that env vars are loaded
 logger.info(f"GROQ_API_KEY loaded: {bool(os.getenv('GROQ_API_KEY'))}")
