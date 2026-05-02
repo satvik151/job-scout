@@ -42,8 +42,10 @@ The content is organized as follows:
 <directory_structure>
 .gitignore
 backend/__init__.py
+backend/database.py
 backend/digest.py
 backend/main.py
+backend/models.py
 backend/scorer.py
 backend/scraper.py
 README.md
@@ -55,20 +57,189 @@ test_scorer_run.py
 <files>
 This section contains the contents of the repository's files.
 
-<file path=".gitignore">
-venv/
-.venv/
-.env
-__pycache__/
-*.pyc
-.DS_Store
+<file path="backend/database.py">
+"""SQLAlchemy database configuration and session management."""
+import logging
+from pathlib import Path
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+
+logger = logging.getLogger(__name__)
+
+# Build database path dynamically using Path
+# This ensures the path is correct regardless of where uvicorn is launched from
+db_path = Path(__file__).parent / "jobs.db"
+DATABASE_URL = f"sqlite:///{db_path}"
+
+# SQLite requires check_same_thread=False because FastAPI handles requests
+# across multiple threads. In production, you'd use PostgreSQL which handles
+# multi-threading natively.
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    echo=False,  # Set to True for SQL query logging
+)
+
+# Create session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def get_db() -> Session:
+    """FastAPI dependency to provide a database session.
+    
+    Usage in endpoints:
+        @app.get("/jobs")
+        def get_jobs(db: Session = Depends(get_db)):
+            ...
+    
+    The session is automatically closed after the request completes.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def init_db() -> None:
+    """Initialize the database by creating all tables.
+    
+    Call this once at application startup.
+    """
+    from .models import Base
+    
+    Base.metadata.create_all(bind=engine)
+    logger.info(f"Database initialized at {db_path}")
+</file>
+
+<file path="backend/models.py">
+"""SQLAlchemy models for job-scout database."""
+import hashlib
+import json
+import logging
+from datetime import datetime
+
+from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, Index
+from sqlalchemy.orm import declarative_base, Session
+
+logger = logging.getLogger(__name__)
+
+Base = declarative_base()
+
+
+class Job(Base):
+    """SQLAlchemy model for job listings."""
+    
+    __tablename__ = "jobs"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String, nullable=False)
+    company = Column(String, nullable=False)
+    url = Column(String, unique=True, nullable=False)
+    url_hash = Column(String(32), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    skills = Column(Text, nullable=True)  # Stored as JSON string
+    score = Column(Float, nullable=True)
+    skills_match_pct = Column(Integer, nullable=True)
+    missing_skills = Column(Text, nullable=True)  # Stored as JSON string
+    seniority_fit = Column(String(20), nullable=True)
+    reason = Column(String(300), nullable=True)
+    scraped_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    is_new = Column(Boolean, default=True, nullable=False)
+    
+    def __repr__(self) -> str:
+        return f"<Job id={self.id} title={self.title} company={self.company}>"
+
+
+def upsert_job(db: Session, job_data: dict) -> tuple[Job, bool]:
+    """Upsert a job into the database.
+    
+    Computes URL hash and checks for duplicates.
+    Converts skills lists to JSON before storing.
+    
+    Args:
+        db: SQLAlchemy session
+        job_data: Dictionary with job details (must include 'url' and 'skills')
+    
+    Returns:
+        Tuple of (job_object, is_new)
+        - is_new=True if job was just created
+        - is_new=False if job already existed
+    
+    Note: This function does NOT commit. Call db.commit() once after the loop.
+    """
+    # Compute URL hash for deduplication
+    url_hash = hashlib.md5(job_data["url"].encode()).hexdigest()
+    
+    # Check if job already exists by URL hash
+    existing_job = db.query(Job).filter(Job.url_hash == url_hash).first()
+    if existing_job:
+        return (existing_job, False)
+    
+    # Job is new — create and add to session
+    try:
+        new_job = Job(
+            title=job_data.get("title", ""),
+            company=job_data.get("company", ""),
+            url=job_data.get("url", ""),
+            url_hash=url_hash,
+            description=job_data.get("description", ""),
+            skills=json.dumps(job_data.get("skills", [])),
+            score=job_data.get("score"),
+            skills_match_pct=job_data.get("skills_match_pct"),
+            missing_skills=json.dumps(job_data.get("missing_skills", [])),
+            seniority_fit=job_data.get("seniority_fit"),
+            reason=job_data.get("reason"),
+        )
+        db.add(new_job)
+        return (new_job, True)
+    except Exception as e:
+        logger.error(f"Failed to upsert job: {e}")
+        db.rollback()
+        raise
+
+
+def get_new_jobs(db: Session, limit: int = 50) -> list[Job]:
+    """Retrieve all new jobs (is_new=True) ordered by most recent.
+    
+    Args:
+        db: SQLAlchemy session
+        limit: Maximum number of jobs to return
+    
+    Returns:
+        List of Job objects
+    """
+    return (
+        db.query(Job)
+        .filter(Job.is_new == True)
+        .order_by(Job.scraped_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def mark_jobs_as_seen(db: Session, job_ids: list[int]) -> None:
+    """Mark jobs as seen (is_new=False) after they've been sent in a digest.
+    
+    Args:
+        db: SQLAlchemy session
+        job_ids: List of job IDs to mark as seen
+    """
+    if not job_ids:
+        return
+    
+    try:
+        db.query(Job).filter(Job.id.in_(job_ids)).update({Job.is_new: False})
+        db.commit()
+        logger.info(f"Marked {len(job_ids)} jobs as seen")
+    except Exception as e:
+        logger.error(f"Failed to mark jobs as seen: {e}")
+        db.rollback()
+        raise
 </file>
 
 <file path="backend/__init__.py">
-
-</file>
-
-<file path="README.md">
 
 </file>
 
@@ -187,13 +358,15 @@ print(f"Test complete. Top match: {results[0]['title']} (score: {results[0].get(
 print("=" * 70)
 </file>
 
-<file path="requirements.txt">
-fastapi
-uvicorn
-requests
-beautifulsoup4
-python-dotenv
-groq
+<file path=".gitignore">
+venv/
+.venv/
+.env
+__pycache__/
+*.pyc
+.DS_Store
+# Local SQLite database created during development
+backend/jobs.db
 </file>
 
 <file path="backend/digest.py">
@@ -375,182 +548,290 @@ if __name__ == "__main__":
     print("(Email would be sent with send_digest() — not called in test)")
 </file>
 
-<file path="backend/main.py">
+<file path="backend/scraper.py">
 import logging
-import os
 import time
-from pathlib import Path
-from dotenv import load_dotenv
 
-# Load environment variables FIRST before any other imports
-load_dotenv(Path(__file__).parent / ".env")
+import requests
+from bs4 import BeautifulSoup
 
-# If dotenv didn't populate required variables (some runtimes/encodings),
-# attempt a safe manual fallback to read the .env and set any missing keys.
-env_path = Path(__file__).parent / ".env"
-if env_path.exists():
-	try:
-		with env_path.open("r", encoding="utf-8") as f:
-			for raw in f:
-				line = raw.strip()
-				if not line or line.startswith("#"):
-					continue
-				if "=" not in line:
-					continue
-				k, v = line.split("=", 1)
-				k = k.strip()
-				v = v.strip().strip('"').strip("'")
-				if k and not os.getenv(k):
-					os.environ[k] = v
-        
-	except Exception:
-		# best-effort: don't crash the import if manual load fails
-		pass
-
-from typing import Optional
-
-from fastapi import FastAPI, HTTPException, Query, Body
-from pydantic import BaseModel
-
-from .scraper import scrape_internshala_jobs
-from .scorer import score_jobs
-from .digest import format_digest, send_digest
-
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
 
-# Debug: log that env vars are loaded
-logger.info(f"GROQ_API_KEY loaded: {bool(os.getenv('GROQ_API_KEY'))}")
-logger.info(f"RESEND_API_KEY loaded: {bool(os.getenv('RESEND_API_KEY'))}")
-logger.info(f"SENDER_EMAIL loaded: {bool(os.getenv('SENDER_EMAIL'))}")
-logger.info(f"DIGEST_EMAIL loaded: {bool(os.getenv('DIGEST_EMAIL'))}")
-
-# ENV sanity-check at startup
-logger.info(f"ENV CHECK: GROQ_API_KEY present = {bool(os.getenv('GROQ_API_KEY'))}")
-
-# Startup validation: check required env vars and warn if missing
-REQUIRED_ENVS = [
-	"GROQ_API_KEY",
-	"RESEND_API_KEY",
-	"SENDER_EMAIL",
-	"DIGEST_EMAIL",
-]
-missing = [name for name in REQUIRED_ENVS if not os.getenv(name)]
-if missing:
-	logger.warning("Missing environment variables: %s", missing)
-	# Provide default for DIGEST_EMAIL if not set
-	if "DIGEST_EMAIL" in missing:
-		os.environ.setdefault("DIGEST_EMAIL", "satvikislegendary@gmail.com")
-		logger.info("Defaulted DIGEST_EMAIL to satvikislegendary@gmail.com")
-
-# TODO: replace with real resume text or load from file
-CANDIDATE_PROFILE = """
-Software Engineer with experience in Python, FastAPI, SQL, and cloud platforms.
-Interested in backend and full-stack roles.
-"""
-
-MAX_JOBS = 10
-
-
-@app.get("/")
-def root():
-	return {"status": "job-scout is alive"}
-
-
-@app.get("/jobs")
-def get_jobs(pages: int = Query(default=2, ge=1, le=10)):
-	request_start = time.perf_counter()
-	logger.info("/jobs endpoint called with pages=%s", pages)
-
-	# Scrape
-	scrape_start = time.perf_counter()
-	jobs = scrape_internshala_jobs(max_pages=pages)
-	scrape_elapsed = time.perf_counter() - scrape_start
-	total_scraped = len(jobs)
-	logger.info("Total jobs scraped: %s", total_scraped)
-	if scrape_elapsed > 5.0:
-		logger.warning("Scraper duration warning: %.2fs (>5s)", scrape_elapsed)
-
-	if not jobs:
-		logger.warning("Scraper returned 0 jobs")
-		return {"total_scraped": 0, "returned": 0, "jobs": []}
-
-	try:
-		logger.info("Starting job scoring")
-		score_start = time.perf_counter()
-		scored_jobs = score_jobs(jobs, CANDIDATE_PROFILE)
-		score_elapsed = time.perf_counter() - score_start
-		logger.info("Finished job scoring in %.2fs", score_elapsed)
-	except Exception as e:
-		logger.error("Scoring failed: %s", e)
-		raise HTTPException(status_code=500, detail="Scoring failed — check logs")
-
-	total_elapsed = time.perf_counter() - request_start
-	logger.info("Summary: Scrape: %.2fs | Score: %.2fs | Total: %.2fs", scrape_elapsed, score_elapsed, total_elapsed)
-
-	top_jobs = scored_jobs[:MAX_JOBS]
-	return {
-		"total_scraped": total_scraped,
-		"returned": len(top_jobs),
-		"jobs": top_jobs,
+def scrape_internshala_jobs(max_pages=5):
+	start_time = time.perf_counter()
+	logger.info("Starting Internshala jobs scraper")
+	headers = {
+		"User-Agent": (
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+			"AppleWebKit/537.36 (KHTML, like Gecko) "
+			"Chrome/124.0.0.0 Safari/537.36"
+		)
 	}
 
+	all_jobs = []
+	seen_urls = set()
 
-class DigestRequest(BaseModel):
-    recipient_email: Optional[str] = None
+	for page in range(1, max_pages + 1):
+		# Page 1 uses /jobs/, page 2+ use /jobs/page-2, /jobs/page-3, etc.
+		if page == 1:
+			url = "https://internshala.com/jobs/"
+		else:
+			url = f"https://internshala.com/jobs/page-{page}/"
+
+		logger.info(f"Fetching page {page}: {url}")
+		page_start = time.perf_counter()
+
+		try:
+			response = requests.get(url, headers=headers, timeout=10)
+			if response.status_code != 200:
+				logger.warning(
+					f"Page {page} returned status {response.status_code}, skipping"
+				)
+				continue
+
+			soup = BeautifulSoup(response.text, "html.parser")
+			page_jobs = []
+
+			for card in soup.find_all("div", class_="internship_meta"):
+				try:
+					title_link = card.find("a", class_="job-title-href")
+					company_tag = card.find("p", class_="company-name")
+					location_link = card.find("p", class_="locations")
+					description_tag = card.find("div", class_="about_job")
+					skill_tags = card.find_all("div", class_="job_skill")
+
+					job = {
+						"title": title_link.get_text(strip=True) if title_link else "",
+						"url": (
+							f"https://internshala.com{title_link.get('href')}"
+							if title_link and title_link.get("href")
+							else ""
+						),
+						"company": company_tag.get_text(strip=True) if company_tag else "",
+						"location": (
+							location_link.find("a").get_text(strip=True)
+							if location_link and location_link.find("a")
+							else ""
+						),
+						"description": (
+							description_tag.get_text(strip=True)
+							if description_tag
+							else ""
+						),
+						"skills": [
+							skill.get_text(strip=True) for skill in skill_tags
+						],
+					}
+
+					# Deduplicate by URL
+					if job["url"] and job["url"] not in seen_urls:
+						all_jobs.append(job)
+						seen_urls.add(job["url"])
+						page_jobs.append(job)
+
+				except Exception as e:
+					logger.warning(f"Error parsing job card: {e}")
+					continue
+
+			page_elapsed = time.perf_counter() - page_start
+			logger.info(f"Page {page}: Found {len(page_jobs)} new jobs (took {page_elapsed:.2f}s)")
+
+			# Rate limiting: wait 1 second before next page request
+			if page < max_pages:
+				time.sleep(1)
+
+		except requests.RequestException as e:
+			logger.error(f"Request error on page {page}: {e}")
+			continue
+
+	elapsed = time.perf_counter() - start_time
+	logger.info(f"Scrape complete. Total jobs found: {len(all_jobs)} (took {elapsed:.2f}s)")
+	if elapsed > 5.0:
+		logger.warning(f"Scraper took too long: {elapsed:.2f}s (>5s)")
+	return all_jobs
 
 
-@app.post("/send-digest")
-def send_digest_endpoint(payload: DigestRequest = Body(default=None)):
-    """Run a full pipeline: scrape -> score (limited) -> format -> send digest.
+if __name__ == "__main__":
+	jobs = scrape_internshala_jobs(max_pages=2)
+	print(f"\nFound {len(jobs)} jobs total")
+	if jobs:
+		print("First job:")
+		print(jobs[0])
+	else:
+		print("No jobs found")
+</file>
 
-    Notes: slow operation due to scraping + LLM calls. Keep limits low.
-    """
-    # Determine recipient
-    if payload and payload.recipient_email:
-        recipient = payload.recipient_email
-    else:
-        recipient = os.getenv("DIGEST_EMAIL", "satvikislegendary@gmail.com")
+<file path="README.md">
+# Job Scout
 
-    logger.info("/send-digest called. Recipient: %s", recipient)
+Scrape, score, and send ranked job listings via email using AI-powered candidate profile matching.
 
-    # Scrape (safeguard: limit pages to 1 for debug)
-    logger.info("Starting scrape for digest (max_pages=1)")
-    scrape_start = time.perf_counter()
-    jobs = scrape_internshala_jobs(max_pages=1)
-    scrape_elapsed = time.perf_counter() - scrape_start
-    logger.info("Scrape finished: %d jobs found (%.2fs)", len(jobs), scrape_elapsed)
+## How It Works
 
-    # Score (limit to first 3 for safety)
-    jobs_to_score = jobs[:3]
-    logger.info("Scoring up to %d jobs for digest", len(jobs_to_score))
-    try:
-        score_start = time.perf_counter()
-        scored = score_jobs(jobs_to_score, CANDIDATE_PROFILE)
-        score_elapsed = time.perf_counter() - score_start
-        logger.info("Scoring finished (%.2fs)", score_elapsed)
-    except Exception as e:
-        logger.error("Scoring failed during /send-digest: %s", e)
-        raise HTTPException(status_code=500, detail="Scoring failed — check logs")
+- **Scrape**: Fetches job listings from Internshala (up to 5 pages, ~250 jobs) with deduplication and rate limiting
+- **Score**: Analyzes each job against your candidate profile using Groq LLM API (llama-3.1-8b-instant)
+- **Return**: Structured scoring for each job: overall score (0-10), skills match %, missing skills, seniority fit, and reasoning
+- **Email**: Formats top jobs into a plain-text digest and sends via Resend API
 
-    top_jobs = scored[:MAX_JOBS]
+## Tech Stack
 
-    # Format
-    logger.info("Formatting digest for %d jobs", len(top_jobs))
-    body = format_digest(top_jobs)
+| Tool | Purpose |
+|------|---------|
+| Python 3.x | Core runtime |
+| FastAPI | HTTP API framework & endpoints |
+| BeautifulSoup4 | HTML parsing for Internshala scraping |
+| Groq API | LLM for job scoring against candidate profile |
+| Resend | Email service provider |
+| python-dotenv | Environment variable management |
 
-    # Send
-    logger.info("Sending digest to %s", recipient)
-    sent = send_digest(recipient, body, len(top_jobs))
-    if sent:
-        logger.info("Digest sent to %s", recipient)
-    else:
-        logger.warning("Digest NOT sent to %s", recipient)
+## Project Structure
 
-    logger.info("DIGEST PIPELINE COMPLETE — sent=%s", sent)
+```
+job-scout/
+├── backend/
+│   ├── main.py              # FastAPI app, endpoints, orchestration
+│   ├── scraper.py           # Internshala scraper with pagination & dedup
+│   ├── scorer.py            # Groq LLM scoring logic
+│   ├── digest.py            # Email formatting & Resend integration
+│   ├── .env                 # Environment secrets (keys, emails)
+│   ├── __init__.py          # Package marker
+│   └── requirements.txt     # Python dependencies (for reference)
+├── requirements.txt         # Python package list
+├── .venv/                   # Virtual environment (git-ignored)
+├── .gitignore               # Git exclusions
+└── README.md                # This file
+```
 
-    return {"sent": bool(sent), "recipient": recipient, "jobs_in_digest": len(top_jobs)}
+## Setup Instructions
+
+### 1. Clone & Navigate
+```bash
+cd job-scout
+```
+
+### 2. Create Virtual Environment
+```bash
+python -m venv .venv
+# Windows:
+.venv\Scripts\Activate.ps1
+# Mac/Linux:
+source .venv/bin/activate
+```
+
+### 3. Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure Environment
+Create `backend/.env` with your API keys:
+```dotenv
+GROQ_API_KEY=sk_...your_groq_key...
+RESEND_API_KEY=re_...your_resend_key...
+SENDER_EMAIL=onboarding@resend.dev
+DIGEST_EMAIL=your-email@example.com
+DEBUG_LIMIT=3
+```
+
+**Key Notes:**
+- `GROQ_API_KEY`: Get from [console.groq.com](https://console.groq.com)
+- `RESEND_API_KEY`: Get from [resend.com](https://resend.com)
+- `SENDER_EMAIL`: Must be a verified domain in Resend (use `onboarding@resend.dev` for testing)
+- `DIGEST_EMAIL`: Recipient address for job digests
+- `DEBUG_LIMIT=3`: Limits scoring to 3 jobs for fast development; set to 0 for production
+
+### 5. Run the Server
+```bash
+cd backend
+python -m uvicorn main:app --reload --port 8000
+```
+
+Server runs at `http://localhost:8000`
+
+## API Endpoints
+
+| Method | Endpoint | Description | Example |
+|--------|----------|-------------|---------|
+| GET | `/` | Health check | Returns `{"status": "job-scout is alive"}` |
+| GET | `/jobs?pages=2` | Scrape & score jobs | Returns array of scored job objects |
+| POST | `/send-digest` | Scrape → Score (limited) → Format → Email | Returns `{"sent": true, "recipient": "...", "jobs_in_digest": 3}` |
+
+### Example Request
+```bash
+curl "http://localhost:8000/jobs?pages=2"
+```
+
+### Example Response
+```json
+{
+  "total_scraped": 100,
+  "returned": 10,
+  "jobs": [
+    {
+      "title": "Backend Engineer",
+      "company": "TechCorp",
+      "description": "Build APIs with Python & PostgreSQL...",
+      "skills": ["Python", "FastAPI", "PostgreSQL"],
+      "url": "https://internshala.com/...",
+      "score": 8.5,
+      "skills_match_pct": 85,
+      "missing_skills": ["Docker"],
+      "seniority_fit": "good fit",
+      "reason": "Strong match on core tech stack; Docker experience would be beneficial."
+    }
+  ]
+}
+```
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GROQ_API_KEY` | Yes | Groq API key for LLM access |
+| `RESEND_API_KEY` | Yes | Resend API key for email sending |
+| `SENDER_EMAIL` | Yes | Verified sender email in Resend (e.g., `onboarding@resend.dev`) |
+| `DIGEST_EMAIL` | Yes | Recipient email for job digest (defaults to `satvikislegendary@gmail.com`) |
+| `DEBUG_LIMIT` | No | Limit scoring to N jobs (0 = no limit, default for production) |
+
+## What's Coming Next (Phase 3)
+
+Phase 2 (database, deduplication, and persistence) is complete — jobs are now
+stored in `backend/jobs.db`, deduplicated by an MD5 `url_hash`, and flagged as
+`is_new` until included in a sent digest.
+
+Planned Phase 3 work:
+
+- **Scheduler**: Automatic scraping & digest sending (cron/worker)
+- **Multi-User**: User accounts, per-user candidate profiles, and subscriptions
+- **Web UI**: React frontend for browsing ranked jobs and managing profiles
+- **Advanced Filtering**: Location, salary, experience, and skill filters
+- **Analytics**: Store historical scores and show trends / match rates
+- **Integrations**: Slack/Discord notifications and calendar sync for interviews
+
+## Development Notes
+
+- Jobs are scraped from [Internshala](https://internshala.com/jobs/) with a 1-second rate limit between pages
+- Scoring uses Groq's `llama-3.1-8b-instant` model for fast, cost-effective analysis
+- The `/send-digest` endpoint limits scraping to 1 page and scoring to 3 jobs for safety (prevents long-running requests)
+- Change `DEBUG_LIMIT` in `.env` to disable scoring limits for full pipelines
+- Email fallback: If the official Resend library fails, requests are sent directly to the Resend HTTP API
+
+## License
+
+MIT
+</file>
+
+<file path="requirements.txt">
+fastapi
+uvicorn
+requests
+beautifulsoup4
+python-dotenv
+groq
+resend
+sqlalchemy
 </file>
 
 <file path="backend/scorer.py">
@@ -564,19 +845,30 @@ from groq import Groq
 logger = logging.getLogger(__name__)
 
 # Temporary debug limit: when >0 only the first N jobs are scored
-DEBUG_LIMIT = 3
+# Loaded from environment variable, default to 0 (no limit)
+DEBUG_LIMIT = int(os.getenv("DEBUG_LIMIT", "0"))
+
+# Module-level cache for Groq client (lazy initialization)
+_groq_client = None
 
 
 def get_groq_client():
-    """Lazily create a Groq client using the environment-provided API key.
+    """Lazily create and cache a Groq client using the environment-provided API key.
 
     Raises:
         ValueError: if `GROQ_API_KEY` is not present in the environment.
     """
+    global _groq_client
+    
+    if _groq_client is not None:
+        return _groq_client
+    
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise ValueError("GROQ_API_KEY not loaded")
-    return Groq(api_key=api_key, timeout=30.0)
+    
+    _groq_client = Groq(api_key=api_key, timeout=30.0)
+    return _groq_client
 
 
 def _failed_score(job: dict) -> dict:
@@ -800,119 +1092,245 @@ if __name__ == "__main__":
     print(f"\nTop job: {results[0]['title']} - Score: {results[0].get('score', 'N/A')}")
 </file>
 
-<file path="backend/scraper.py">
+<file path="backend/main.py">
+import json
 import logging
+import os
 import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
 
-import requests
-from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Query, Body, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+from .database import init_db, get_db
+from .models import upsert_job, get_new_jobs, mark_jobs_as_seen
+from .scraper import scrape_internshala_jobs
+from .scorer import score_jobs
+from .digest import format_digest, send_digest
+
+# Load environment variables FIRST before any other imports
+load_dotenv(Path(__file__).parent / ".env")
+
+
 logger = logging.getLogger(__name__)
 
 
-def scrape_internshala_jobs(max_pages=5):
-	start_time = time.perf_counter()
-	logger.info("Starting Internshala jobs scraper")
-	headers = {
-		"User-Agent": (
-			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-			"AppleWebKit/537.36 (KHTML, like Gecko) "
-			"Chrome/124.0.0.0 Safari/537.36"
-		)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+	"""FastAPI lifespan context manager for startup/shutdown events.
+	
+	Replaces deprecated @app.on_event("startup") pattern.
+	init_db() is called before the app starts serving requests.
+	"""
+	init_db()
+	yield
+	# Shutdown logic would go here if needed
+
+
+app = FastAPI(lifespan=lifespan)
+
+# Enable CORS for frontend to call this API from browser
+app.add_middleware(
+	CORSMiddleware,
+	allow_origins=["*"],
+	allow_credentials=True,
+	allow_methods=["*"],
+	allow_headers=["*"],
+)
+
+# Debug: log that env vars are loaded
+logger.info(f"GROQ_API_KEY loaded: {bool(os.getenv('GROQ_API_KEY'))}")
+logger.info(f"RESEND_API_KEY loaded: {bool(os.getenv('RESEND_API_KEY'))}")
+logger.info(f"SENDER_EMAIL loaded: {bool(os.getenv('SENDER_EMAIL'))}")
+logger.info(f"DIGEST_EMAIL loaded: {bool(os.getenv('DIGEST_EMAIL'))}")
+
+# ENV sanity-check at startup
+logger.info(f"ENV CHECK: GROQ_API_KEY present = {bool(os.getenv('GROQ_API_KEY'))}")
+
+# Startup validation: check required env vars and warn if missing
+REQUIRED_ENVS = [
+	"GROQ_API_KEY",
+	"RESEND_API_KEY",
+	"SENDER_EMAIL",
+	"DIGEST_EMAIL",
+]
+missing = [name for name in REQUIRED_ENVS if not os.getenv(name)]
+if missing:
+	logger.warning("Missing environment variables: %s", missing)
+	# Provide default for DIGEST_EMAIL if not set
+	if "DIGEST_EMAIL" in missing:
+		os.environ.setdefault("DIGEST_EMAIL", "satvikislegendary@gmail.com")
+		logger.info("Defaulted DIGEST_EMAIL to satvikislegendary@gmail.com")
+
+# TODO: replace with real resume text or load from file
+CANDIDATE_PROFILE = """
+Software Engineer with experience in Python, FastAPI, SQL, and cloud platforms.
+Interested in backend and full-stack roles.
+"""
+
+MAX_JOBS = 10
+
+
+@app.get("/")
+def root():
+	return {"status": "job-scout is alive"}
+
+
+@app.get("/jobs")
+def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(get_db)):
+	request_start = time.perf_counter()
+	logger.info("/jobs endpoint called with pages=%s", pages)
+
+	# Scrape
+	scrape_start = time.perf_counter()
+	jobs = scrape_internshala_jobs(max_pages=pages)
+	scrape_elapsed = time.perf_counter() - scrape_start
+	total_scraped = len(jobs)
+	logger.info("Total jobs scraped: %s", total_scraped)
+	if scrape_elapsed > 5.0:
+		logger.warning("Scraper duration warning: %.2fs (>5s)", scrape_elapsed)
+
+	if not jobs:
+		logger.warning("Scraper returned 0 jobs")
+		return {"total_scraped": 0, "returned": 0, "jobs": []}
+
+	# Upsert all scraped jobs into database (deduplication happens here)
+	upsert_start = time.perf_counter()
+	new_count = 0
+	for job in jobs:
+		_, is_new = upsert_job(db, job)
+		if is_new:
+			new_count += 1
+	db.commit()
+	upsert_elapsed = time.perf_counter() - upsert_start
+	logger.info(f"Upserted {len(jobs)} jobs ({new_count} new) in {upsert_elapsed:.2f}s")
+
+	# Score only new jobs for the response
+	new_db_jobs = get_new_jobs(db, limit=MAX_JOBS)
+	if not new_db_jobs:
+		logger.warning("No new jobs to score")
+		return {"total_scraped": total_scraped, "returned": 0, "jobs": []}
+
+	# Convert DB rows back to dicts for scorer — parse JSON fields
+	new_jobs_as_dicts = [
+		{
+			**j.__dict__,
+			"skills": json.loads(j.skills or "[]"),
+			"missing_skills": json.loads(j.missing_skills or "[]")
+		}
+		for j in new_db_jobs
+	]
+
+	try:
+		logger.info("Starting job scoring for %d new jobs", len(new_jobs_as_dicts))
+		score_start = time.perf_counter()
+		scored_jobs = score_jobs(new_jobs_as_dicts, CANDIDATE_PROFILE)
+		score_elapsed = time.perf_counter() - score_start
+		logger.info("Finished job scoring in %.2fs", score_elapsed)
+	except Exception as e:
+		logger.error("Scoring failed: %s", e)
+		raise HTTPException(status_code=500, detail="Scoring failed — check logs")
+
+	total_elapsed = time.perf_counter() - request_start
+	logger.info("Summary: Scrape: %.2fs | Upsert: %.2fs | Score: %.2fs | Total: %.2fs", 
+		   scrape_elapsed, upsert_elapsed, score_elapsed, total_elapsed)
+
+	top_jobs = scored_jobs[:MAX_JOBS]
+	return {
+		"total_scraped": total_scraped,
+		"returned": len(top_jobs),
+		"jobs": top_jobs,
 	}
 
-	all_jobs = []
-	seen_urls = set()
 
-	for page in range(1, max_pages + 1):
-		# Page 1 uses /jobs/, page 2+ use /jobs/page-2, /jobs/page-3, etc.
-		if page == 1:
-			url = "https://internshala.com/jobs/"
-		else:
-			url = f"https://internshala.com/jobs/page-{page}/"
-
-		logger.info(f"Fetching page {page}: {url}")
-		page_start = time.perf_counter()
-
-		try:
-			response = requests.get(url, headers=headers, timeout=10)
-			if response.status_code != 200:
-				logger.warning(
-					f"Page {page} returned status {response.status_code}, skipping"
-				)
-				continue
-
-			soup = BeautifulSoup(response.text, "html.parser")
-			page_jobs = []
-
-			for card in soup.find_all("div", class_="internship_meta"):
-				try:
-					title_link = card.find("a", class_="job-title-href")
-					company_tag = card.find("p", class_="company-name")
-					location_link = card.find("p", class_="locations")
-					description_tag = card.find("div", class_="about_job")
-					skill_tags = card.find_all("div", class_="job_skill")
-
-					job = {
-						"title": title_link.get_text(strip=True) if title_link else "",
-						"url": (
-							f"https://internshala.com{title_link.get('href')}"
-							if title_link and title_link.get("href")
-							else ""
-						),
-						"company": company_tag.get_text(strip=True) if company_tag else "",
-						"location": (
-							location_link.find("a").get_text(strip=True)
-							if location_link and location_link.find("a")
-							else ""
-						),
-						"description": (
-							description_tag.get_text(strip=True)
-							if description_tag
-							else ""
-						),
-						"skills": [
-							skill.get_text(strip=True) for skill in skill_tags
-						],
-					}
-
-					# Deduplicate by URL
-					if job["url"] and job["url"] not in seen_urls:
-						all_jobs.append(job)
-						seen_urls.add(job["url"])
-						page_jobs.append(job)
-
-				except Exception as e:
-					logger.warning(f"Error parsing job card: {e}")
-					continue
-
-			page_elapsed = time.perf_counter() - page_start
-			logger.info(f"Page {page}: Found {len(page_jobs)} new jobs (took {page_elapsed:.2f}s)")
-
-			# Rate limiting: wait 1 second before next page request
-			if page < max_pages:
-				time.sleep(1)
-
-		except requests.RequestException as e:
-			logger.error(f"Request error on page {page}: {e}")
-			continue
-
-	elapsed = time.perf_counter() - start_time
-	logger.info(f"Scrape complete. Total jobs found: {len(all_jobs)} (took {elapsed:.2f}s)")
-	if elapsed > 5.0:
-		logger.warning(f"Scraper took too long: {elapsed:.2f}s (>5s)")
-	return all_jobs
+class DigestRequest(BaseModel):
+    recipient_email: Optional[str] = None
 
 
-if __name__ == "__main__":
-	jobs = scrape_internshala_jobs(max_pages=2)
-	print(f"\nFound {len(jobs)} jobs total")
-	if jobs:
-		print("First job:")
-		print(jobs[0])
+@app.post("/send-digest")
+def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Session = Depends(get_db)):
+	"""Run a full pipeline: scrape -> upsert -> score (limited) -> format -> send digest.
+	
+	After sending, marks the sent jobs as seen so they don't appear in future digests.
+	Notes: slow operation due to scraping + LLM calls. Keep limits low.
+	"""
+	# Determine recipient
+	if payload and payload.recipient_email:
+		recipient = payload.recipient_email
 	else:
-		print("No jobs found")
+		recipient = os.getenv("DIGEST_EMAIL", "satvikislegendary@gmail.com")
+
+	logger.info("/send-digest called. Recipient: %s", recipient)
+
+	# Scrape (safeguard: limit pages to 1 for debug)
+	logger.info("Starting scrape for digest (max_pages=1)")
+	scrape_start = time.perf_counter()
+	jobs = scrape_internshala_jobs(max_pages=1)
+	scrape_elapsed = time.perf_counter() - scrape_start
+	logger.info("Scrape finished: %d jobs found (%.2fs)", len(jobs), scrape_elapsed)
+
+	# Upsert scraped jobs and commit
+	new_count = 0
+	for job in jobs:
+		_, is_new = upsert_job(db, job)
+		if is_new:
+			new_count += 1
+	db.commit()
+	logger.info(f"Upserted {len(jobs)} jobs ({new_count} new) for digest")
+
+	# Score only new jobs (limit to first 3 for safety)
+	new_db_jobs = get_new_jobs(db, limit=3)
+	if not new_db_jobs:
+		logger.info("No new jobs available for digest")
+		return {"sent": False, "recipient": recipient, "jobs_in_digest": 0}
+
+	# Convert DB rows to dicts for scorer
+	jobs_to_score = [
+		{
+			**j.__dict__,
+			"skills": json.loads(j.skills or "[]"),
+			"missing_skills": json.loads(j.missing_skills or "[]")
+		}
+		for j in new_db_jobs
+	]
+
+	logger.info("Scoring %d jobs for digest", len(jobs_to_score))
+	try:
+		score_start = time.perf_counter()
+		scored = score_jobs(jobs_to_score, CANDIDATE_PROFILE)
+		score_elapsed = time.perf_counter() - score_start
+		logger.info("Scoring finished (%.2fs)", score_elapsed)
+	except Exception as e:
+		logger.error("Scoring failed during /send-digest: %s", e)
+		raise HTTPException(status_code=500, detail="Scoring failed — check logs")
+
+	top_jobs = scored[:MAX_JOBS]
+
+	# Format
+	logger.info("Formatting digest for %d jobs", len(top_jobs))
+	body = format_digest(top_jobs)
+
+	# Send
+	logger.info("Sending digest to %s", recipient)
+	sent = send_digest(recipient, body, len(top_jobs))
+	if sent:
+		logger.info("Digest sent to %s", recipient)
+		# Mark the sent jobs as seen so they don't appear in future digests
+		seen_ids = [j.get("id") for j in top_jobs if "id" in j]
+		if seen_ids:
+			mark_jobs_as_seen(db, seen_ids)
+			logger.info(f"Marked {len(seen_ids)} jobs as seen")
+	else:
+		logger.warning("Digest NOT sent to %s", recipient)
+
+	logger.info("DIGEST PIPELINE COMPLETE — sent=%s", sent)
+
+	return {"sent": bool(sent), "recipient": recipient, "jobs_in_digest": len(top_jobs)}
 </file>
 
 </files>
