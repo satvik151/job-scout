@@ -129,14 +129,20 @@ curl "http://localhost:8000/jobs?pages=2"
 | `DIGEST_EMAIL` | Yes | Recipient email for job digest (defaults to `satvikislegendary@gmail.com`) |
 | `DEBUG_LIMIT` | No | Limit scoring to N jobs (0 = no limit, default for production) |
 
-## What's Coming Next (Phase 2)
+## What's Coming Next (Phase 3)
 
-- **Database**: Store scraped jobs & scores in PostgreSQL for historical comparison
-- **Scheduler**: Automatic job scraping & digest sending on a schedule (e.g., daily)
-- **Multi-User**: User accounts, custom candidate profiles, and email subscriptions
-- **Web UI**: React frontend for browsing jobs, adjusting profiles, and managing subscriptions
-- **Advanced Filtering**: Filter jobs by location, salary, experience level
-- **Notifications**: Slack/Discord integration for real-time alerts on top matches
+Phase 2 (database, deduplication, and persistence) is complete — jobs are now
+stored in `backend/jobs.db`, deduplicated by an MD5 `url_hash`, and flagged as
+`is_new` until included in a sent digest.
+
+Planned Phase 3 work:
+
+- **Scheduler**: Automatic scraping & digest sending (cron/worker)
+- **Multi-User**: User accounts, per-user candidate profiles, and subscriptions
+- **Web UI**: React frontend for browsing ranked jobs and managing profiles
+- **Advanced Filtering**: Location, salary, experience, and skill filters
+- **Analytics**: Store historical scores and show trends / match rates
+- **Integrations**: Slack/Discord notifications and calendar sync for interviews
 
 ## Development Notes
 
