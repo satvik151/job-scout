@@ -11,16 +11,22 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Body, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .database import init_db, get_db, SessionLocal
-from .models import upsert_job, get_new_jobs, mark_jobs_as_seen
+from .models import upsert_job, get_new_jobs, mark_jobs_as_seen, User
 from .scraper import scrape_internshala_jobs
 from .scorer import score_jobs
 from .digest import format_digest, send_digest
+from .auth import (
+	UserCreate, UserLogin, TokenResponse, UserResponse,
+	get_user_by_email, create_user, authenticate_user,
+	create_access_token, decode_access_token
+)
 
 # Load environment variables FIRST before any other imports
 load_dotenv(Path(__file__).parent / ".env")
@@ -130,6 +136,56 @@ app.add_middleware(
 	allow_headers=["*"],
 )
 
+# OAuth2 scheme for JWT tokens
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+def get_current_user(
+	token: str = Depends(oauth2_scheme),
+	db: Session = Depends(get_db)
+) -> User:
+	"""Dependency to extract and validate JWT token from Authorization header.
+	
+	Extract "Authorization: Bearer <token>" from request headers.
+	Decode token and fetch user from database.
+	
+	Args:
+		token: JWT token from Authorization header (extracted by oauth2_scheme)
+		db: Database session
+	
+	Returns:
+		User object if token is valid
+	
+	Raises:
+		HTTPException 401: If token is invalid, expired, or user not found
+	"""
+	payload = decode_access_token(token)
+	if not payload:
+		raise HTTPException(
+			status_code=401,
+			detail="Invalid or expired token",
+			headers={"WWW-Authenticate": "Bearer"},
+		)
+	
+	email = payload.get("sub")
+	if not email:
+		raise HTTPException(
+			status_code=401,
+			detail="Token missing 'sub' claim",
+			headers={"WWW-Authenticate": "Bearer"},
+		)
+	
+	user = get_user_by_email(db, email)
+	if not user:
+		raise HTTPException(
+			status_code=401,
+			detail="User not found",
+			headers={"WWW-Authenticate": "Bearer"},
+		)
+	
+	return user
+
+
 # Startup validation: check required env vars and warn if missing
 REQUIRED_ENVS = [
 	"GROQ_API_KEY",
@@ -156,6 +212,105 @@ MAX_JOBS = 10
 @app.get("/")
 def root():
 	return {"status": "job-scout is alive"}
+
+
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
+
+@app.post("/auth/register", response_model=UserResponse)
+def register(payload: UserCreate, db: Session = Depends(get_db)):
+	"""Register a new user.
+	
+	Args:
+		payload: UserCreate schema (email + password)
+		db: Database session
+	
+	Returns:
+		UserResponse with new user's info (no hashed_password exposed)
+	
+	Raises:
+		HTTPException 400: If email already registered
+	"""
+	logger.info(f"POST /auth/register: email={payload.email}")
+	
+	# Check if email already exists
+	existing_user = get_user_by_email(db, payload.email)
+	if existing_user:
+		logger.warning(f"Registration failed: email {payload.email} already registered")
+		raise HTTPException(
+			status_code=400,
+			detail="Email already registered"
+		)
+	
+	# Create new user (password is hashed inside create_user)
+	try:
+		user = create_user(db, payload.email, payload.password)
+		logger.info(f"User registered: {payload.email} (id={user.id})")
+		return UserResponse(
+			id=user.id,
+			email=user.email,
+			has_resume=user.resume_text is not None
+		)
+	except Exception as e:
+		logger.error(f"User creation failed: {e}")
+		raise HTTPException(status_code=500, detail="User creation failed")
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(payload: UserLogin, db: Session = Depends(get_db)):
+	"""Authenticate user and return JWT token.
+	
+	Args:
+		payload: UserLogin schema (email + password)
+		db: Database session
+	
+	Returns:
+		TokenResponse with access_token (JWT) and token_type="bearer"
+	
+	Raises:
+		HTTPException 401: If email not found or password incorrect
+	"""
+	logger.info(f"POST /auth/login: email={payload.email}")
+	
+	# Authenticate user
+	user = authenticate_user(db, payload.email, payload.password)
+	if not user:
+		logger.warning(f"Login failed: invalid credentials for {payload.email}")
+		raise HTTPException(
+			status_code=401,
+			detail="Invalid credentials"
+		)
+	
+	# Create JWT token
+	access_token = create_access_token({
+		"sub": user.email,
+		"user_id": user.id
+	})
+	
+	logger.info(f"Login successful: {payload.email}")
+	return TokenResponse(access_token=access_token, token_type="bearer")
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def get_current_user_info(current_user: User = Depends(get_current_user)):
+	"""Get current authenticated user's info.
+	
+	Protected endpoint: requires valid JWT in Authorization header.
+	
+	Args:
+		current_user: Current user (extracted from JWT token via dependency)
+	
+	Returns:
+		UserResponse with user's info
+	"""
+	logger.info(f"GET /auth/me: user={current_user.email}")
+	return UserResponse(
+		id=current_user.id,
+		email=current_user.email,
+		has_resume=current_user.resume_text is not None
+	)
+
 
 
 @app.get("/jobs")
