@@ -3,19 +3,21 @@ import logging
 import os
 import time
 import threading
+import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Body, Depends
+from fastapi import FastAPI, HTTPException, Query, Body, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from PyPDF2 import PdfReader
 
 from .database import init_db, get_db, SessionLocal
 from .models import upsert_job, get_new_jobs, mark_jobs_as_seen, User
@@ -310,6 +312,83 @@ def get_current_user_info(current_user: User = Depends(get_current_user)):
 		email=current_user.email,
 		has_resume=current_user.resume_text is not None
 	)
+
+
+@app.post("/auth/upload-resume")
+async def upload_resume(
+	file: UploadFile = File(...),
+	current_user: User = Depends(get_current_user),
+	db: Session = Depends(get_db)
+):
+	"""Upload and extract text from a PDF resume.
+	
+	Protected endpoint: requires valid JWT in Authorization header.
+	
+	Args:
+		file: PDF file upload from form-data
+		current_user: Current authenticated user
+		db: Database session
+	
+	Returns:
+		JSON with success message and character count
+	
+	Raises:
+		HTTPException 400: If not a PDF or text extraction fails
+	"""
+	logger.info(f"POST /auth/upload-resume: user={current_user.email}, file={file.filename}")
+	
+	# Validate file type
+	if file.content_type != "application/pdf":
+		logger.warning(f"Upload failed: wrong content-type {file.content_type}")
+		raise HTTPException(
+			status_code=400,
+			detail="Only PDF files accepted"
+		)
+	
+	# Read file bytes
+	try:
+		file_bytes = await file.read()
+		logger.debug(f"File read: {len(file_bytes)} bytes")
+	except Exception as e:
+		logger.error(f"Failed to read file: {e}")
+		raise HTTPException(status_code=400, detail="Failed to read file")
+	
+	# Extract text from PDF
+	try:
+		pdf_reader = PdfReader(io.BytesIO(file_bytes))
+		extracted_text = "".join(
+			page.extract_text() or "" for page in pdf_reader.pages
+		)
+		logger.info(f"Extracted {len(extracted_text)} characters from PDF")
+	except Exception as e:
+		logger.error(f"PDF extraction failed: {e}")
+		raise HTTPException(
+			status_code=400,
+			detail="Could not extract text from PDF"
+		)
+	
+	# Validate extracted text
+	if not extracted_text or len(extracted_text) < 50:
+		logger.warning(f"Extracted text too short: {len(extracted_text)} chars")
+		raise HTTPException(
+			status_code=400,
+			detail="Could not extract text from PDF"
+		)
+	
+	# Store in database
+	try:
+		current_user.resume_text = extracted_text
+		db.commit()
+		logger.info(f"Resume uploaded for {current_user.email}: {len(extracted_text)} chars")
+		return {
+			"message": "Resume uploaded",
+			"characters_extracted": len(extracted_text)
+		}
+	except Exception as e:
+		logger.error(f"Database update failed: {e}")
+		db.rollback()
+		raise HTTPException(status_code=500, detail="Failed to save resume")
+
 
 
 
