@@ -102,8 +102,9 @@ async def lifespan(app: FastAPI):
 	"""FastAPI lifespan context manager for startup/shutdown events.
 	
 	Replaces deprecated @app.on_event("startup") pattern.
-	init_db() is called before the app starts serving requests.
+	init_db() is called before the scheduler to ensure tables exist.
 	"""
+	init_db()
 	scheduler = BackgroundScheduler()
 	scheduler.add_job(
 		run_daily_pipeline,
@@ -112,7 +113,6 @@ async def lifespan(app: FastAPI):
 		replace_existing=True,
 	)
 	scheduler.start()
-	init_db()
 	try:
 		yield
 	finally:
@@ -141,11 +141,14 @@ missing = [name for name in REQUIRED_ENVS if not os.getenv(name)]
 if missing:
 	logger.warning("Missing environment variables: %s", missing)
 
-# TODO: replace with real resume text or load from file
-CANDIDATE_PROFILE = """
-Software Engineer with experience in Python, FastAPI, SQL, and cloud platforms.
-Interested in backend and full-stack roles.
-"""
+# Load candidate profile from file or use fallback
+profile_path = Path(__file__).parent / "profile.txt"
+if profile_path.exists():
+	CANDIDATE_PROFILE = profile_path.read_text()
+	logger.info(f"Profile loaded from {profile_path}: {len(CANDIDATE_PROFILE)} characters")
+else:
+	logger.warning("profile.txt not found — using fallback profile")
+	CANDIDATE_PROFILE = "Python developer with backend experience"
 
 MAX_JOBS = 10
 

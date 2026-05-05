@@ -76,7 +76,17 @@ DEBUG_LIMIT=3
 - `DIGEST_EMAIL`: Recipient address for job digests
 - `DEBUG_LIMIT=3`: Limits scoring to 3 jobs for fast development; set to 0 for production
 
-### 5. Run the Server
+### 5. Create Your Candidate Profile
+Create `backend/profile.txt` with your resume or profile text:
+```
+Software Engineer with 5 years experience in Python, FastAPI, and backend development.
+Strong in databases (PostgreSQL, SQLite), APIs, and cloud (AWS).
+Interested in backend, full-stack, and DevOps roles.
+```
+
+The LLM will use this to score job matches. Update it with your actual experience for meaningful results.
+
+### 6. Run the Server
 ```bash
 cd backend
 python -m uvicorn main:app --reload --port 8000

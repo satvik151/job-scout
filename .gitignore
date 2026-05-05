@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 # Local SQLite database created during development
 backend/jobs.db
+# User's candidate profile (should not be committed)
+backend/profile.txt

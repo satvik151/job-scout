@@ -11,6 +11,10 @@ api_key = os.getenv('RESEND_API_KEY')
 print(f'Sender: {sender}')
 print(f'API Key exists: {bool(api_key)}')
 
+recipient = os.getenv('DIGEST_EMAIL')
+if not recipient:
+    raise ValueError('DIGEST_EMAIL not set')
+
 resp = requests.post(
     'https://api.resend.com/emails',
     headers={
@@ -19,7 +23,7 @@ resp = requests.post(
     },
     json={
         'from': sender,
-        'to': 'satvikislegendary@gmail.com',
+        'to': recipient,
         'subject': 'Job Scout Digest',
         'text': 'This is your job digest.'
     },
