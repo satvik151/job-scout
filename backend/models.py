@@ -115,7 +115,6 @@ def mark_jobs_as_seen(db: Session, job_ids: list[int]) -> None:
     
     try:
         db.query(Job).filter(Job.id.in_(job_ids)).update({Job.is_new: False})
-        db.commit()
         logger.info(f"Marked {len(job_ids)} jobs as seen")
     except Exception as e:
         logger.error(f"Failed to mark jobs as seen: {e}")

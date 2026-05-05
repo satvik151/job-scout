@@ -2,17 +2,21 @@ import json
 import logging
 import os
 import time
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Body, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
-from .database import init_db, get_db
+from .database import init_db, get_db, SessionLocal
 from .models import upsert_job, get_new_jobs, mark_jobs_as_seen
 from .scraper import scrape_internshala_jobs
 from .scorer import score_jobs
@@ -25,6 +29,74 @@ load_dotenv(Path(__file__).parent / ".env")
 logger = logging.getLogger(__name__)
 
 
+def _job_to_scoring_dict(job) -> dict:
+	return {
+		"id": job.id,
+		"title": job.title,
+		"company": job.company,
+		"url": job.url,
+		"url_hash": job.url_hash,
+		"description": job.description,
+		"skills": json.loads(job.skills or "[]"),
+		"missing_skills": json.loads(job.missing_skills or "[]"),
+		"score": job.score,
+		"skills_match_pct": job.skills_match_pct,
+		"seniority_fit": job.seniority_fit,
+		"reason": job.reason,
+		"scraped_at": job.scraped_at,
+		"is_new": job.is_new,
+	}
+
+
+def run_daily_pipeline() -> None:
+	"""Run scrape -> upsert -> score -> digest -> mark-seen pipeline."""
+	start_time = time.perf_counter()
+	db = SessionLocal()
+	try:
+		logger.info("Daily pipeline started")
+		jobs = scrape_internshala_jobs(max_pages=2)
+		logger.info("Daily pipeline scraped %d jobs", len(jobs))
+
+		new_count = 0
+		for job in jobs:
+			_, is_new = upsert_job(db, job)
+			if is_new:
+				new_count += 1
+		db.commit()
+		logger.info("Daily pipeline upserted %d jobs (%d new)", len(jobs), new_count)
+
+		new_jobs = get_new_jobs(db)
+		if not new_jobs:
+			logger.info("No new jobs")
+			return
+
+		jobs_to_score = [_job_to_scoring_dict(job) for job in new_jobs]
+		scored_jobs = score_jobs(jobs_to_score, CANDIDATE_PROFILE)
+		top_jobs = scored_jobs[:MAX_JOBS]
+		body = format_digest(top_jobs)
+
+		recipient = os.getenv("DIGEST_EMAIL")
+		if not recipient:
+			logger.error("DIGEST_EMAIL not configured")
+			return
+
+		sent = send_digest(recipient, body, len(top_jobs))
+		if sent:
+			seen_ids = [job.get("id") for job in top_jobs if job.get("id") is not None]
+			if seen_ids:
+				mark_jobs_as_seen(db, seen_ids)
+				db.commit()
+				logger.info("Daily pipeline marked %d jobs as seen", len(seen_ids))
+		else:
+			logger.warning("Daily pipeline did not send digest")
+	except Exception:
+		logger.exception("Daily pipeline failed")
+	finally:
+		db.close()
+		elapsed = time.perf_counter() - start_time
+		logger.info("Daily pipeline finished in %.2fs", elapsed)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 	"""FastAPI lifespan context manager for startup/shutdown events.
@@ -32,9 +104,19 @@ async def lifespan(app: FastAPI):
 	Replaces deprecated @app.on_event("startup") pattern.
 	init_db() is called before the app starts serving requests.
 	"""
+	scheduler = BackgroundScheduler()
+	scheduler.add_job(
+		run_daily_pipeline,
+		CronTrigger(hour=9, minute=0, timezone=ZoneInfo("Asia/Kolkata")),
+		id="daily_pipeline",
+		replace_existing=True,
+	)
+	scheduler.start()
 	init_db()
-	yield
-	# Shutdown logic would go here if needed
+	try:
+		yield
+	finally:
+		scheduler.shutdown(wait=False)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -109,26 +191,7 @@ def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(g
 		return {"total_scraped": total_scraped, "returned": 0, "jobs": []}
 
 	# Convert DB rows back to dicts for scorer — parse JSON fields
-	# Use explicit field extraction to avoid leaking SQLAlchemy's _sa_instance_state
-	new_jobs_as_dicts = [
-		{
-			"id": j.id,
-			"title": j.title,
-			"company": j.company,
-			"url": j.url,
-			"url_hash": j.url_hash,
-			"description": j.description,
-			"skills": json.loads(j.skills or "[]"),
-			"missing_skills": json.loads(j.missing_skills or "[]"),
-			"score": j.score,
-			"skills_match_pct": j.skills_match_pct,
-			"seniority_fit": j.seniority_fit,
-			"reason": j.reason,
-			"scraped_at": j.scraped_at,
-			"is_new": j.is_new,
-		}
-		for j in new_db_jobs
-	]
+	new_jobs_as_dicts = [_job_to_scoring_dict(j) for j in new_db_jobs]
 
 	try:
 		logger.info("Starting job scoring for %d new jobs", len(new_jobs_as_dicts))
@@ -196,26 +259,7 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 		return {"sent": False, "recipient": recipient, "jobs_in_digest": 0}
 
 	# Convert DB rows to dicts for scorer
-	# Use explicit field extraction to avoid leaking SQLAlchemy's _sa_instance_state
-	jobs_to_score = [
-		{
-			"id": j.id,
-			"title": j.title,
-			"company": j.company,
-			"url": j.url,
-			"url_hash": j.url_hash,
-			"description": j.description,
-			"skills": json.loads(j.skills or "[]"),
-			"missing_skills": json.loads(j.missing_skills or "[]"),
-			"score": j.score,
-			"skills_match_pct": j.skills_match_pct,
-			"seniority_fit": j.seniority_fit,
-			"reason": j.reason,
-			"scraped_at": j.scraped_at,
-			"is_new": j.is_new,
-		}
-		for j in new_db_jobs
-	]
+	jobs_to_score = [_job_to_scoring_dict(j) for j in new_db_jobs]
 
 	logger.info("Scoring %d jobs for digest", len(jobs_to_score))
 	try:
@@ -242,6 +286,7 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 		seen_ids = [j.get("id") for j in top_jobs if "id" in j]
 		if seen_ids:
 			mark_jobs_as_seen(db, seen_ids)
+			db.commit()
 			logger.info(f"Marked {len(seen_ids)} jobs as seen")
 	else:
 		logger.warning("Digest NOT sent to %s", recipient)
@@ -249,3 +294,9 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 	logger.info("DIGEST PIPELINE COMPLETE — sent=%s", sent)
 
 	return {"sent": bool(sent), "recipient": recipient, "jobs_in_digest": len(top_jobs)}
+
+
+@app.post("/run-pipeline")
+def run_pipeline_endpoint():
+	threading.Thread(target=run_daily_pipeline, daemon=True).start()
+	return {"started": True}

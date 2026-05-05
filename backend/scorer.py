@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 from groq import Groq
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,60 @@ def validate_score_data(data: dict) -> dict:
     validated["reason"] = str(reason) if reason else required_keys["reason"]
     
     return validated
+
+
+def _parse_scraped_at(scraped_at):
+    """Parse scraped_at values from datetime objects or ISO strings."""
+    if isinstance(scraped_at, datetime):
+        return scraped_at
+
+    if isinstance(scraped_at, str):
+        text = scraped_at.strip()
+        if not text:
+            return None
+
+        normalized = text.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+
+    return None
+
+
+def _freshness_bonus_from_scraped_at(scraped_at) -> float:
+    """Compute a freshness bonus based on how recently a job was scraped."""
+    parsed_scraped_at = _parse_scraped_at(scraped_at)
+    if parsed_scraped_at is None:
+        return 0.5
+
+    today = datetime.now(timezone.utc).date()
+
+    if parsed_scraped_at.tzinfo is None:
+        scraped_date = parsed_scraped_at.date()
+    else:
+        scraped_date = parsed_scraped_at.astimezone(timezone.utc).date()
+
+    days_old = (today - scraped_date).days
+    if days_old <= 0:
+        return 1.0
+    if days_old == 1:
+        return 0.8
+    if days_old == 2:
+        return 0.6
+    return 0.2
+
+
+def compute_final_score(job: dict) -> float:
+    """Combine LLM score and freshness into a single ranking score."""
+    try:
+        llm_score = float(job.get("score", 0.0))
+    except (TypeError, ValueError):
+        llm_score = 0.0
+
+    freshness_bonus = _freshness_bonus_from_scraped_at(job.get("scraped_at"))
+    final_score = (llm_score * 0.6) + (freshness_bonus * 10 * 0.4)
+    return round(float(final_score), 2)
 
 
 def score_job(job: dict, profile_text: str) -> dict:
@@ -219,9 +274,23 @@ def score_jobs(jobs: list, profile_text: str) -> list:
     scoring_elapsed = time.perf_counter() - scoring_start
     logger.info(f"Scoring complete. Scored {len(scored_jobs)} jobs in {scoring_elapsed:.2f}s")
 
-    # Sort by score descending
-    scored_jobs.sort(key=lambda x: x.get("score", 0.0), reverse=True)
-    logger.info(f"Jobs sorted by score (descending)")
+    for job in scored_jobs:
+        job["final_score"] = compute_final_score(job)
+
+    # Sort by final score descending
+    scored_jobs.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    logger.info("Jobs sorted by final_score (descending)")
+
+    if scored_jobs:
+        top_job = scored_jobs[0]
+        top_freshness_bonus = _freshness_bonus_from_scraped_at(top_job.get("scraped_at"))
+        logger.info(
+            "Top ranked job: %s | llm_score=%.2f | freshness_bonus=%.2f | final_score=%.2f",
+            top_job.get("title", "Unknown"),
+            float(top_job.get("score", 0.0) or 0.0),
+            top_freshness_bonus,
+            float(top_job.get("final_score", 0.0) or 0.0),
+        )
     return scored_jobs
 
 
