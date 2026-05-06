@@ -59,15 +59,17 @@ class User(Base):
         return f"<User id={self.id} email={self.email} active={self.is_active}>"
 
 
-def upsert_job(db: Session, job_data: dict) -> tuple[Job, bool]:
+def upsert_job(db: Session, job_data: dict, user_id: int | None = None) -> tuple[Job, bool]:
     """Upsert a job into the database.
     
-    Computes URL hash and checks for duplicates.
+    Computes URL hash and checks for duplicates per user.
     Converts skills lists to JSON before storing.
+    Allows the same job URL to be in multiple users' feeds.
     
     Args:
         db: SQLAlchemy session
         job_data: Dictionary with job details (must include 'url' and 'skills')
+        user_id: User ID to associate with the job (optional for backward compatibility)
     
     Returns:
         Tuple of (job_object, is_new)
@@ -79,8 +81,11 @@ def upsert_job(db: Session, job_data: dict) -> tuple[Job, bool]:
     # Compute URL hash for deduplication
     url_hash = hashlib.md5(job_data["url"].encode()).hexdigest()
     
-    # Check if job already exists by URL hash
-    existing_job = db.query(Job).filter(Job.url_hash == url_hash).first()
+    # Check if job already exists by URL hash AND user_id
+    query = db.query(Job).filter(Job.url_hash == url_hash)
+    if user_id is not None:
+        query = query.filter(Job.user_id == user_id)
+    existing_job = query.first()
     if existing_job:
         return (existing_job, False)
     
@@ -98,6 +103,7 @@ def upsert_job(db: Session, job_data: dict) -> tuple[Job, bool]:
             missing_skills=json.dumps(job_data.get("missing_skills", [])),
             seniority_fit=job_data.get("seniority_fit"),
             reason=job_data.get("reason"),
+            user_id=user_id,
         )
         db.add(new_job)
         return (new_job, True)
@@ -107,37 +113,70 @@ def upsert_job(db: Session, job_data: dict) -> tuple[Job, bool]:
         raise
 
 
-def get_new_jobs(db: Session, limit: int = 50) -> list[Job]:
+def get_new_jobs(db: Session, user_id: int | None = None, limit: int = 50) -> list[Job]:
     """Retrieve all new jobs (is_new=True) ordered by most recent.
+    
+    Optionally filtered by user_id for per-user feeds.
     
     Args:
         db: SQLAlchemy session
+        user_id: User ID to filter jobs (optional)
         limit: Maximum number of jobs to return
     
     Returns:
         List of Job objects
     """
+    query = db.query(Job).filter(Job.is_new == True)
+    if user_id is not None:
+        query = query.filter(Job.user_id == user_id)
     return (
-        db.query(Job)
-        .filter(Job.is_new == True)
+        query
         .order_by(Job.scraped_at.desc())
         .limit(limit)
         .all()
     )
 
 
-def mark_jobs_as_seen(db: Session, job_ids: list[int]) -> None:
+def get_all_jobs_for_user(db: Session, user_id: int, limit: int = 50) -> list[Job]:
+    """Retrieve all jobs for a user sorted by score descending.
+    
+    Filters out jobs with no score assigned.
+    
+    Args:
+        db: SQLAlchemy session
+        user_id: User ID to retrieve jobs for
+        limit: Maximum number of jobs to return
+    
+    Returns:
+        List of Job objects sorted by score (highest first)
+    """
+    return (
+        db.query(Job)
+        .filter(Job.user_id == user_id, Job.score != None)
+        .order_by(Job.score.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def mark_jobs_as_seen(db: Session, job_ids: list[int], user_id: int | None = None) -> None:
     """Mark jobs as seen (is_new=False) after they've been sent in a digest.
+    
+    Optionally filtered by user_id to prevent users from marking each other's jobs.
     
     Args:
         db: SQLAlchemy session
         job_ids: List of job IDs to mark as seen
+        user_id: User ID to filter (optional, for backward compatibility)
     """
     if not job_ids:
         return
     
     try:
-        db.query(Job).filter(Job.id.in_(job_ids)).update({Job.is_new: False})
+        query = db.query(Job).filter(Job.id.in_(job_ids))
+        if user_id is not None:
+            query = query.filter(Job.user_id == user_id)
+        query.update({Job.is_new: False})
         logger.info(f"Marked {len(job_ids)} jobs as seen")
     except Exception as e:
         logger.error(f"Failed to mark jobs as seen: {e}")
