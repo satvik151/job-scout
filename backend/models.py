@@ -4,8 +4,8 @@ import json
 import logging
 from datetime import datetime
 
-from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, Index
-from sqlalchemy.orm import declarative_base, Session
+from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, Index, ForeignKey
+from sqlalchemy.orm import declarative_base, Session, relationship
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,10 @@ class Job(Base):
     reason = Column(String(300), nullable=True)
     scraped_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_new = Column(Boolean, default=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    
+    # Relationship
+    user = relationship("User", back_populates="jobs")
     
     def __repr__(self) -> str:
         return f"<Job id={self.id} title={self.title} company={self.company}>"
@@ -47,6 +51,9 @@ class User(Base):
     resume_text = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Relationship
+    jobs = relationship("Job", back_populates="user", lazy="select")
     
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email} active={self.is_active}>"
