@@ -10,7 +10,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Body, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Query, Body, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
@@ -18,6 +18,9 @@ from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from PyPDF2 import PdfReader
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from .database import init_db, get_db, SessionLocal
 from .models import upsert_job, get_new_jobs, mark_jobs_as_seen, User
@@ -128,6 +131,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Enable CORS for frontend to call this API from browser
 app.add_middleware(
@@ -260,10 +268,14 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/auth/login", response_model=TokenResponse)
-def login(payload: UserLogin, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, payload: UserLogin, db: Session = Depends(get_db)):
 	"""Authenticate user and return JWT token.
 	
+	Rate limited to 5 attempts per minute per IP address.
+	
 	Args:
+		request: FastAPI Request object (used by rate limiter to get client IP)
 		payload: UserLogin schema (email + password)
 		db: Database session
 	
@@ -272,6 +284,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 	
 	Raises:
 		HTTPException 401: If email not found or password incorrect
+		HTTPException 429: If rate limit exceeded
 	"""
 	logger.info(f"POST /auth/login: email={payload.email}")
 	
