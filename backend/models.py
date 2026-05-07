@@ -20,8 +20,8 @@ class Job(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     title = Column(String, nullable=False)
     company = Column(String, nullable=False)
-    url = Column(String, unique=True, nullable=False)
-    url_hash = Column(String(32), unique=True, nullable=False, index=True)
+    url = Column(String, nullable=False)
+    url_hash = Column(String(32), nullable=False, index=True)
     description = Column(Text, nullable=True)
     skills = Column(Text, nullable=True)  # Stored as JSON string
     score = Column(Float, nullable=True)

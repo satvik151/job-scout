@@ -6,7 +6,7 @@ from typing import Optional
 
 from jose import jwt, JWTError
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from .models import User
@@ -123,18 +123,15 @@ class TokenResponse(BaseModel):
 
 
 class UserResponse(BaseModel):
-	"""Schema for user info response."""
+	"""Schema for user info response.
+	
+	Fields are constructed explicitly at the endpoint level.
+	"""
 	id: int
 	email: str
 	has_resume: bool
 	
-	@property
-	def has_resume(self) -> bool:
-		"""Computed property: True if user has uploaded a resume."""
-		return self.resume_text is not None
-	
-	class Config:
-		from_attributes = True
+	model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================================================

@@ -169,8 +169,6 @@ def score_job(job: dict, profile_text: str) -> dict:
         Original job dict merged with scoring fields: score, skills_match_pct,
         missing_skills, seniority_fit, reason
     """
-    # Debug: confirm key presence at call time
-    logger.info(f"GROQ key present: {bool(os.getenv('GROQ_API_KEY'))}")
     try:
         client = get_groq_client()
     except Exception as e:

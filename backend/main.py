@@ -10,6 +10,10 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+
+# Load environment variables FIRST before any other imports
+load_dotenv(Path(__file__).parent / ".env")
+
 from fastapi import FastAPI, HTTPException, Query, Body, Depends, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
@@ -32,9 +36,6 @@ from .auth import (
 	get_user_by_email, create_user, authenticate_user,
 	create_access_token, decode_access_token
 )
-
-# Load environment variables FIRST before any other imports
-load_dotenv(Path(__file__).parent / ".env")
 
 
 logger = logging.getLogger(__name__)
@@ -59,53 +60,100 @@ def _job_to_scoring_dict(job) -> dict:
 	}
 
 
-def run_daily_pipeline() -> None:
-	"""Run scrape -> upsert -> score -> digest -> mark-seen pipeline."""
+def run_daily_pipeline(user_id: int, resume_text: str) -> None:
+	"""Run scrape -> upsert -> score -> digest -> mark-seen pipeline for a single user.
+
+	Args:
+		user_id: Database id of the user to run the pipeline for
+		resume_text: Candidate resume/profile text to use for scoring
+	"""
 	start_time = time.perf_counter()
 	db = SessionLocal()
 	try:
-		logger.info("Daily pipeline started")
+		logger.info("User pipeline started for user_id=%s", user_id)
 		jobs = scrape_internshala_jobs(max_pages=2)
-		logger.info("Daily pipeline scraped %d jobs", len(jobs))
+		logger.info("Pipeline scraped %d jobs for user_id=%s", len(jobs), user_id)
 
 		new_count = 0
 		for job in jobs:
-			_, is_new = upsert_job(db, job)
+			_, is_new = upsert_job(db, job, user_id=user_id)
 			if is_new:
 				new_count += 1
 		db.commit()
-		logger.info("Daily pipeline upserted %d jobs (%d new)", len(jobs), new_count)
+		logger.info("Pipeline upserted %d jobs (%d new) for user_id=%s", len(jobs), new_count, user_id)
 
-		new_jobs = get_new_jobs(db)
+		new_jobs = get_new_jobs(db, user_id=user_id)
 		if not new_jobs:
-			logger.info("No new jobs")
+			logger.info("No new jobs for user_id=%s", user_id)
 			return
 
 		jobs_to_score = [_job_to_scoring_dict(job) for job in new_jobs]
-		scored_jobs = score_jobs(jobs_to_score, CANDIDATE_PROFILE)
+		scored_jobs = score_jobs(jobs_to_score, resume_text)
 		top_jobs = scored_jobs[:MAX_JOBS]
 		body = format_digest(top_jobs)
 
-		recipient = os.getenv("DIGEST_EMAIL")
+		# Determine recipient from user record
+		user = db.get(User, user_id)
+		recipient = getattr(user, "email", None) if user else None
 		if not recipient:
-			logger.error("DIGEST_EMAIL not configured")
+			logger.error("Recipient email not found for user_id=%s", user_id)
 			return
 
 		sent = send_digest(recipient, body, len(top_jobs))
 		if sent:
 			seen_ids = [job.get("id") for job in top_jobs if job.get("id") is not None]
 			if seen_ids:
-				mark_jobs_as_seen(db, seen_ids)
+				mark_jobs_as_seen(db, seen_ids, user_id=user_id)
 				db.commit()
-				logger.info("Daily pipeline marked %d jobs as seen", len(seen_ids))
+				logger.info("Pipeline marked %d jobs as seen for user_id=%s", len(seen_ids), user_id)
 		else:
-			logger.warning("Daily pipeline did not send digest")
+			logger.warning("Pipeline did not send digest for user_id=%s", user_id)
 	except Exception:
-		logger.exception("Daily pipeline failed")
+		logger.exception("User pipeline failed for user_id=%s", user_id)
 	finally:
 		db.close()
 		elapsed = time.perf_counter() - start_time
-		logger.info("Daily pipeline finished in %.2fs", elapsed)
+		logger.info("User pipeline finished for user_id=%s in %.2fs", user_id, elapsed)
+
+
+def run_pipeline_for_all_users() -> None:
+	"""Run the daily pipeline for all active users with uploaded resume.
+	
+	Queries all users where is_active=True and resume_text is not None,
+	then calls run_daily_pipeline(user_id, resume_text) for each.
+	
+	If any user's pipeline fails, that error is logged but does not affect others.
+	"""
+	start_time = time.perf_counter()
+	db = SessionLocal()
+	try:
+		logger.info("Multi-user pipeline started")
+		
+		# Query all active users with resume_text
+		active_users = db.query(User).filter(
+			User.is_active == True,
+			User.resume_text != None
+		).all()
+		
+		logger.info("Running pipeline for %d active users", len(active_users))
+		
+		for user in active_users:
+			try:
+				logger.info("Starting pipeline for user_id=%s (%s)", user.id, user.email)
+				run_daily_pipeline(user.id, user.resume_text)
+			except Exception:
+				logger.exception("Pipeline failed for user_id=%s (%s)", user.id, user.email)
+				# Continue to next user even if this one fails
+				continue
+		
+		logger.info("Multi-user pipeline completed for %d users", len(active_users))
+		
+	except Exception:
+		logger.exception("Multi-user pipeline failed")
+	finally:
+		db.close()
+		elapsed = time.perf_counter() - start_time
+		logger.info("Multi-user pipeline finished in %.2fs", elapsed)
 
 
 @asynccontextmanager
@@ -118,7 +166,7 @@ async def lifespan(app: FastAPI):
 	init_db()
 	scheduler = BackgroundScheduler()
 	scheduler.add_job(
-		run_daily_pipeline,
+		run_pipeline_for_all_users,
 		CronTrigger(hour=9, minute=0, timezone=ZoneInfo("Asia/Kolkata")),
 		id="daily_pipeline",
 		replace_existing=True,
@@ -406,9 +454,17 @@ async def upload_resume(
 
 
 @app.get("/jobs")
-def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(get_db)):
+def get_jobs(
+    pages: int = Query(default=2, ge=1, le=10),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
 	request_start = time.perf_counter()
-	logger.info("/jobs endpoint called with pages=%s", pages)
+	logger.info("/jobs endpoint called with pages=%s user=%s", pages, current_user.email)
+
+	# Require resume_text for user-aware scoring
+	if not current_user.resume_text:
+		raise HTTPException(status_code=400, detail="Please upload your resume first at POST /auth/upload-resume")
 
 	# Scrape
 	scrape_start = time.perf_counter()
@@ -427,7 +483,7 @@ def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(g
 	upsert_start = time.perf_counter()
 	new_count = 0
 	for job in jobs:
-		_, is_new = upsert_job(db, job)
+		_, is_new = upsert_job(db, job, user_id=current_user.id)
 		if is_new:
 			new_count += 1
 	db.commit()
@@ -435,7 +491,7 @@ def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(g
 	logger.info(f"Upserted {len(jobs)} jobs ({new_count} new) in {upsert_elapsed:.2f}s")
 
 	# Score only new jobs for the response
-	new_db_jobs = get_new_jobs(db, limit=MAX_JOBS)
+	new_db_jobs = get_new_jobs(db, user_id=current_user.id, limit=MAX_JOBS)
 	if not new_db_jobs:
 		logger.warning("No new jobs to score")
 		return {"total_scraped": total_scraped, "returned": 0, "jobs": []}
@@ -446,7 +502,7 @@ def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(g
 	try:
 		logger.info("Starting job scoring for %d new jobs", len(new_jobs_as_dicts))
 		score_start = time.perf_counter()
-		scored_jobs = score_jobs(new_jobs_as_dicts, CANDIDATE_PROFILE)
+		scored_jobs = score_jobs(new_jobs_as_dicts, current_user.resume_text)
 		score_elapsed = time.perf_counter() - score_start
 		logger.info("Finished job scoring in %.2fs", score_elapsed)
 	except Exception as e:
@@ -466,25 +522,26 @@ def get_jobs(pages: int = Query(default=2, ge=1, le=10), db: Session = Depends(g
 
 
 class DigestRequest(BaseModel):
-    recipient_email: Optional[str] = None
+	recipient_email: Optional[str] = None
 
 
 @app.post("/send-digest")
-def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Session = Depends(get_db)):
+def send_digest_endpoint(
+	payload: DigestRequest = Body(default=None),
+	db: Session = Depends(get_db),
+	current_user: User = Depends(get_current_user),
+):
 	"""Run a full pipeline: scrape -> upsert -> score (limited) -> format -> send digest.
 	
 	After sending, marks the sent jobs as seen so they don't appear in future digests.
 	Notes: slow operation due to scraping + LLM calls. Keep limits low.
 	"""
-	# Determine recipient
-	if payload and payload.recipient_email:
-		recipient = payload.recipient_email
-	else:
-		recipient = os.getenv("DIGEST_EMAIL")
-		if not recipient:
-			raise HTTPException(status_code=500, detail="DIGEST_EMAIL not configured")
+	# For security, always send to the authenticated user's email
+	recipient = current_user.email
+	if not recipient:
+		raise HTTPException(status_code=400, detail="Authenticated user has no email configured")
 
-	logger.info("/send-digest called. Recipient: %s", recipient)
+	logger.info("/send-digest called by user=%s. Recipient: %s", current_user.email, recipient)
 
 	# Scrape (safeguard: limit pages to 1 for debug)
 	logger.info("Starting scrape for digest (max_pages=1)")
@@ -493,28 +550,33 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 	scrape_elapsed = time.perf_counter() - scrape_start
 	logger.info("Scrape finished: %d jobs found (%.2fs)", len(jobs), scrape_elapsed)
 
-	# Upsert scraped jobs and commit
+	# Upsert scraped jobs and commit (associate with this user)
 	new_count = 0
 	for job in jobs:
-		_, is_new = upsert_job(db, job)
+		_, is_new = upsert_job(db, job, user_id=current_user.id)
 		if is_new:
 			new_count += 1
 	db.commit()
-	logger.info(f"Upserted {len(jobs)} jobs ({new_count} new) for digest")
+	logger.info(f"Upserted {len(jobs)} jobs ({new_count} new) for digest (user_id=%s)", current_user.id)
 
 	# Score only new jobs (limit to first 3 for safety)
-	new_db_jobs = get_new_jobs(db, limit=3)
+	new_db_jobs = get_new_jobs(db, user_id=current_user.id, limit=3)
 	if not new_db_jobs:
-		logger.info("No new jobs available for digest")
-		return {"sent": False, "recipient": recipient, "jobs_in_digest": 0}
+		logger.info("No new jobs available for digest for user=%s", current_user.email)
+		return {"sent": False, "message": "No new jobs to send"}
 
 	# Convert DB rows to dicts for scorer
 	jobs_to_score = [_job_to_scoring_dict(j) for j in new_db_jobs]
 
-	logger.info("Scoring %d jobs for digest", len(jobs_to_score))
+	# Ensure user has resume_text to score against
+	if not current_user.resume_text:
+		logger.info("User %s has no resume uploaded, aborting digest", current_user.email)
+		return {"sent": False, "message": "Please upload your resume first at POST /auth/upload-resume"}
+
+	logger.info("Scoring %d jobs for digest for user=%s", len(jobs_to_score), current_user.email)
 	try:
 		score_start = time.perf_counter()
-		scored = score_jobs(jobs_to_score, CANDIDATE_PROFILE)
+		scored = score_jobs(jobs_to_score, current_user.resume_text)
 		score_elapsed = time.perf_counter() - score_start
 		logger.info("Scoring finished (%.2fs)", score_elapsed)
 	except Exception as e:
@@ -535,7 +597,7 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 		# Mark the sent jobs as seen so they don't appear in future digests
 		seen_ids = [j.get("id") for j in top_jobs if "id" in j]
 		if seen_ids:
-			mark_jobs_as_seen(db, seen_ids)
+			mark_jobs_as_seen(db, seen_ids, user_id=current_user.id)
 			db.commit()
 			logger.info(f"Marked {len(seen_ids)} jobs as seen")
 	else:
@@ -547,6 +609,13 @@ def send_digest_endpoint(payload: DigestRequest = Body(default=None), db: Sessio
 
 
 @app.post("/run-pipeline")
-def run_pipeline_endpoint():
-	threading.Thread(target=run_daily_pipeline, daemon=True).start()
+def run_pipeline_endpoint(current_user: User = Depends(get_current_user)):
+	"""Trigger the per-user pipeline in a background thread.
+
+	Requires authentication and uses the authenticated user's resume_text.
+	"""
+	if not current_user.resume_text:
+		raise HTTPException(status_code=400, detail="Please upload your resume first at POST /auth/upload-resume")
+
+	threading.Thread(target=run_daily_pipeline, args=(current_user.id, current_user.resume_text), daemon=True).start()
 	return {"started": True}
