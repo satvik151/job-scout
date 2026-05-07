@@ -61,6 +61,66 @@ test_scorer_run.py
 <files>
 This section contains the contents of the repository's files.
 
+<file path="backend/__init__.py">
+
+</file>
+
+<file path="backend/database.py">
+"""SQLAlchemy database configuration and session management."""
+import logging
+from pathlib import Path
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+
+logger = logging.getLogger(__name__)
+
+# Build database path dynamically using Path
+# This ensures the path is correct regardless of where uvicorn is launched from
+db_path = Path(__file__).parent / "jobs.db"
+DATABASE_URL = f"sqlite:///{db_path}"
+
+# SQLite requires check_same_thread=False because FastAPI handles requests
+# across multiple threads. In production, you'd use PostgreSQL which handles
+# multi-threading natively.
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    echo=False,  # Set to True for SQL query logging
+)
+
+# Create session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def get_db() -> Session:
+    """FastAPI dependency to provide a database session.
+    
+    Usage in endpoints:
+        @app.get("/jobs")
+        def get_jobs(db: Session = Depends(get_db)):
+            ...
+    
+    The session is automatically closed after the request completes.
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def init_db() -> None:
+    """Initialize the database by creating all tables.
+    
+    Call this once at application startup.
+    """
+    from .models import Base
+    
+    Base.metadata.create_all(bind=engine)
+    logger.info(f"Database initialized at {db_path}")
+</file>
+
 <file path="test_digest.py">
 import requests
 from datetime import datetime
@@ -494,66 +554,6 @@ Test Scripts Generated:
 ═══════════════════════════════════════════════════════════════════════════
 </file>
 
-<file path="backend/__init__.py">
-
-</file>
-
-<file path="backend/database.py">
-"""SQLAlchemy database configuration and session management."""
-import logging
-from pathlib import Path
-
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-
-logger = logging.getLogger(__name__)
-
-# Build database path dynamically using Path
-# This ensures the path is correct regardless of where uvicorn is launched from
-db_path = Path(__file__).parent / "jobs.db"
-DATABASE_URL = f"sqlite:///{db_path}"
-
-# SQLite requires check_same_thread=False because FastAPI handles requests
-# across multiple threads. In production, you'd use PostgreSQL which handles
-# multi-threading natively.
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    echo=False,  # Set to True for SQL query logging
-)
-
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-def get_db() -> Session:
-    """FastAPI dependency to provide a database session.
-    
-    Usage in endpoints:
-        @app.get("/jobs")
-        def get_jobs(db: Session = Depends(get_db)):
-            ...
-    
-    The session is automatically closed after the request completes.
-    """
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def init_db() -> None:
-    """Initialize the database by creating all tables.
-    
-    Call this once at application startup.
-    """
-    from .models import Base
-    
-    Base.metadata.create_all(bind=engine)
-    logger.info(f"Database initialized at {db_path}")
-</file>
-
 <file path="test_scorer_run.py">
 """
 Quick test run of scorer.py to verify Groq API integration.
@@ -635,6 +635,55 @@ for idx, job in enumerate(results, 1):
 print("\n" + "=" * 70)
 print(f"Test complete. Top match: {results[0]['title']} (score: {results[0].get('score', 'N/A')})")
 print("=" * 70)
+</file>
+
+<file path="test_resend.py">
+import requests
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path('backend/.env'), override=True)
+
+sender = os.getenv('SENDER_EMAIL')
+api_key = os.getenv('RESEND_API_KEY')
+
+print(f'Sender: {sender}')
+print(f'API Key exists: {bool(api_key)}')
+
+recipient = os.getenv('DIGEST_EMAIL')
+if not recipient:
+    raise ValueError('DIGEST_EMAIL not set')
+
+resp = requests.post(
+    'https://api.resend.com/emails',
+    headers={
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json'
+    },
+    json={
+        'from': sender,
+        'to': recipient,
+        'subject': 'Job Scout Digest',
+        'text': 'This is your job digest.'
+    },
+    timeout=15
+)
+print(f'Status: {resp.status_code}')
+print(f'Response: {resp.text}')
+</file>
+
+<file path=".gitignore">
+venv/
+.venv/
+.env
+__pycache__/
+*.pyc
+.DS_Store
+# Local SQLite database created during development
+backend/jobs.db
+# User's candidate profile (should not be committed)
+backend/profile.txt
 </file>
 
 <file path="backend/auth.py">
@@ -834,55 +883,6 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
 	if not verify_password(password, user.hashed_password):
 		return None
 	return user
-</file>
-
-<file path="test_resend.py">
-import requests
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-load_dotenv(Path('backend/.env'), override=True)
-
-sender = os.getenv('SENDER_EMAIL')
-api_key = os.getenv('RESEND_API_KEY')
-
-print(f'Sender: {sender}')
-print(f'API Key exists: {bool(api_key)}')
-
-recipient = os.getenv('DIGEST_EMAIL')
-if not recipient:
-    raise ValueError('DIGEST_EMAIL not set')
-
-resp = requests.post(
-    'https://api.resend.com/emails',
-    headers={
-        'Authorization': f'Bearer {api_key}',
-        'Content-Type': 'application/json'
-    },
-    json={
-        'from': sender,
-        'to': recipient,
-        'subject': 'Job Scout Digest',
-        'text': 'This is your job digest.'
-    },
-    timeout=15
-)
-print(f'Status: {resp.status_code}')
-print(f'Response: {resp.text}')
-</file>
-
-<file path=".gitignore">
-venv/
-.venv/
-.env
-__pycache__/
-*.pyc
-.DS_Store
-# Local SQLite database created during development
-backend/jobs.db
-# User's candidate profile (should not be committed)
-backend/profile.txt
 </file>
 
 <file path="backend/digest.py">
