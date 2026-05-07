@@ -185,10 +185,13 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "*")
+logger.info(f"CORS configured for origin: {FRONTEND_URL}")
+
 # Enable CORS for frontend to call this API from browser
 app.add_middleware(
 	CORSMiddleware,
-	allow_origins=["*"],
+	allow_origins=[FRONTEND_URL],
 	allow_credentials=True,
 	allow_methods=["*"],
 	allow_headers=["*"],
@@ -269,7 +272,14 @@ MAX_JOBS = 10
 
 @app.get("/")
 def root():
-	return {"status": "job-scout is alive"}
+	return {
+		"status": "job-scout is alive",
+		"version": "2.0.0",
+		"docs": "/docs",
+		"environment": (
+			"production" if os.getenv("DATABASE_URL") else "development"
+		)
+	}
 
 
 # ============================================================================
