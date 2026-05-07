@@ -6,6 +6,7 @@ python-dotenv
 groq
 resend
 sqlalchemy
+psycopg2-binary
 apscheduler
 python-jose[cryptography]
 passlib[bcrypt]>=1.7.4

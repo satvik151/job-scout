@@ -1,5 +1,10 @@
-"""SQLAlchemy database configuration and session management."""
+"""SQLAlchemy database configuration and session management.
+
+Supports both SQLite (development) and PostgreSQL (production via Railway).
+Database selection is automatic based on DATABASE_URL environment variable.
+"""
 import logging
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -7,19 +12,38 @@ from sqlalchemy.orm import sessionmaker, Session
 
 logger = logging.getLogger(__name__)
 
-# Build database path dynamically using Path
-# This ensures the path is correct regardless of where uvicorn is launched from
-db_path = Path(__file__).parent / "jobs.db"
-DATABASE_URL = f"sqlite:///{db_path}"
+# ============================================================================
+# DATABASE ENGINE CREATION — SQLite (local) vs PostgreSQL (Railway)
+# ============================================================================
 
-# SQLite requires check_same_thread=False because FastAPI handles requests
-# across multiple threads. In production, you'd use PostgreSQL which handles
-# multi-threading natively.
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    echo=False,  # Set to True for SQL query logging
-)
+database_url = os.getenv("DATABASE_URL")
+
+if database_url:
+    # ========== POSTGRESQL (Railway Production) ==========
+    # Railway injects DATABASE_URL in legacy postgres:// format.
+    # SQLAlchemy 1.4+ requires postgresql:// format. Fix it automatically.
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+    
+    engine = create_engine(
+        database_url,
+        pool_pre_ping=True,  # Validate connections before use (prevents stale connections on Railway)
+        echo=False,  # Set to True for SQL query logging
+    )
+    logger.info("Using database backend: PostgreSQL (Railway)")
+else:
+    # ========== SQLITE (Local Development) ==========
+    # Build database path dynamically using Path
+    # This ensures the path is correct regardless of where uvicorn is launched from
+    db_path = Path(__file__).parent / "jobs.db"
+    database_url = f"sqlite:///{db_path}"
+    
+    engine = create_engine(
+        database_url,
+        connect_args={"check_same_thread": False},  # SQLite-only: allow async request threads to share connection
+        echo=False,  # Set to True for SQL query logging
+    )
+    logger.info(f"Using database backend: SQLite at {db_path}")
 
 # Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -50,4 +74,8 @@ def init_db() -> None:
     from .models import Base
     
     Base.metadata.create_all(bind=engine)
-    logger.info(f"Database initialized at {db_path}")
+    
+    if database_url and database_url.startswith("postgresql"):
+        logger.info("Database initialized: PostgreSQL (Railway)")
+    else:
+        logger.info(f"Database initialized: SQLite at {db_path}")
