@@ -1,5 +1,6 @@
 import { MapPin } from "lucide-react";
 import type { Job } from "@/lib/api";
+import { ScoreBadge } from "./ScoreBadge";
 
 function scoreColor(score: number) {
   if (score > 7) return "#22c55e";
@@ -46,17 +47,7 @@ export function JobCard({ job, index }: { job: Job; index: number }) {
     >
       {/* Row 1 */}
       <div className="flex items-start gap-4">
-        <div
-          className="flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-full"
-          style={{
-            background: `conic-gradient(${color} ${ringPct}%, #2a2a2a ${ringPct}% 100%)`,
-            boxShadow: `0 0 12px ${color}40`,
-          }}
-        >
-          <div className="flex h-[42px] w-[42px] items-center justify-center rounded-full bg-card font-mono text-[18px] font-semibold">
-            {score.toFixed(1)}
-          </div>
-        </div>
+        <ScoreBadge score={score} />
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-[15px] font-semibold text-foreground">
             {job.title}
