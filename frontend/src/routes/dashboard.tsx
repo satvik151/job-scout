@@ -270,7 +270,7 @@ function DashboardPage() {
           )}
         </section>
       </main>
-    </div>
+    </motion.div>
   );
 }
 
