@@ -3,11 +3,13 @@ import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { RefreshCw, Mail, Play, Loader2, Search, Inbox, Sparkles } from "lucide-react";
 import { toast } from "sonner";
+import { motion } from "framer-motion";
 import { ProtectedGate } from "@/components/ProtectedGate";
 import { Navbar } from "@/components/Navbar";
 import { JobCard } from "@/components/JobCard";
 import { api, type Job, type JobsResponse } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
+import { useCountUp } from "@/hooks/useCountUp";
 
 export const Route = createFileRoute("/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — Job Scout" }] }),
@@ -97,16 +99,37 @@ function DashboardPage() {
     return { total, newCount, top, avg };
   }, [jobs]);
 
+  // Count-up animations for stats
+  const animatedTotal = useCountUp(stats.total);
+  const animatedNewCount = useCountUp(stats.newCount);
+  const animatedTop = useCountUp(stats.top, 1500);
+  const animatedAvg = useCountUp(stats.avg);
+
   return (
-    <div className="min-h-screen">
+    <motion.div
+      className="min-h-screen"
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+    >
       <Navbar />
       <main className="mx-auto max-w-[1200px] px-6 py-6">
         {/* Stats */}
         <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatCard label="Total Jobs Fetched" value={stats.total.toString()} />
-          <StatCard label="New Jobs" value={stats.newCount.toString()} />
-          <StatCard label="Top Score" value={`${stats.top.toFixed(1)}/10`} />
-          <StatCard label="Avg Skills Match" value={`${Math.round(stats.avg)}%`} />
+          {[0, 1, 2, 3].map((index) => (
+            <motion.div
+              key={index}
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.35, ease: "easeOut", delay: index * 0.08 }}
+            >
+              {index === 0 && <StatCard label="Total Jobs Fetched" value={animatedTotal.toString()} />}
+              {index === 1 && <StatCard label="New Jobs" value={animatedNewCount.toString()} />}
+              {index === 2 && <StatCard label="Top Score" value={`${animatedTop.toFixed(1)}/10`} />}
+              {index === 3 && <StatCard label="Avg Skills Match" value={`${Math.round(animatedAvg)}%`} />}
+            </motion.div>
+          ))}
         </section>
 
         {/* Actions */}

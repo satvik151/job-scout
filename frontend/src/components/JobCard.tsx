@@ -1,4 +1,5 @@
 import { MapPin } from "lucide-react";
+import { motion } from "framer-motion";
 import type { Job } from "@/lib/api";
 import { ScoreBadge } from "./ScoreBadge";
 
@@ -74,12 +75,15 @@ export function JobCard({ job, index }: { job: Job; index: number }) {
           <span className="font-mono text-foreground">{pct.toFixed(0)}%</span>
         </div>
         <div className="h-[6px] w-full overflow-hidden rounded-full bg-border">
-          <div
+          <motion.div
             className="h-full rounded-full"
             style={{
-              width: `${pct}%`,
               background: "linear-gradient(90deg, #6366f1, #22c55e)",
             }}
+            initial={{ width: "0%" }}
+            whileInView={{ width: `${pct}%` }}
+            transition={{ duration: 0.8, ease: "easeOut", delay: 0.15 }}
+            viewport={{ once: true }}
           />
         </div>
       </div>
