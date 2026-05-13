@@ -1,6 +1,8 @@
 import { useAuthStore } from "@/store/authStore";
 
-export const API_BASE = "https://web-production-d8369.up.railway.app";
+const DEFAULT_API_BASE = "https://web-production-d8369.up.railway.app";
+
+export const API_BASE = import.meta.env.VITE_API_BASE ?? DEFAULT_API_BASE;
 
 async function request<T>(
   path: string,
