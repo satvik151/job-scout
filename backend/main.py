@@ -258,15 +258,6 @@ missing = [name for name in REQUIRED_ENVS if not os.getenv(name)]
 if missing:
 	logger.warning("Missing environment variables: %s", missing)
 
-# Load candidate profile from file or use fallback
-profile_path = Path(__file__).parent / "profile.txt"
-if profile_path.exists():
-	CANDIDATE_PROFILE = profile_path.read_text()
-	logger.info(f"Profile loaded from {profile_path}: {len(CANDIDATE_PROFILE)} characters")
-else:
-	logger.warning("profile.txt not found — using fallback profile")
-	CANDIDATE_PROFILE = "Python developer with backend experience"
-
 MAX_JOBS = 10
 
 
