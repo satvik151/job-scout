@@ -249,13 +249,24 @@ Result Range: 0–10
 - Deploy to Railway.app (CI/CD pipeline)
 - Add database backups & monitoring
 
-### Phase 7: React Frontend
-- Job feed UI with sorting/filtering
-- Resume management dashboard
-- Real-time notifications
-- Dark mode support
+### Frontend Deployment
+- Deploy the frontend from `frontend/` to Vercel
+- Set `VITE_API_BASE` on Vercel to your Railway API URL
+- Add your Vercel production URL to `FRONTEND_URL` on Railway for CORS
+- Keep the Vercel rewrite config so client-side routes like `/dashboard` work on refresh
 
 ---
+
+## Vercel + Railway Setup
+
+1. In Vercel, import the `frontend/` folder as the project root.
+2. Set the build command to `npm run build` and the output directory to `dist/client`.
+3. Add an environment variable:
+  - `VITE_API_BASE=https://web-production-5b114.up.railway.app`
+4. In Railway, set `FRONTEND_URL` to your Vercel production domain, for example:
+  - `https://job-scout.vercel.app`
+5. Redeploy Railway after changing `FRONTEND_URL`.
+6. Use `frontend/vercel.json` so direct links like `/login` and `/dashboard` resolve correctly.
 
 ## Troubleshooting
 

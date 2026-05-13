@@ -7,6 +7,7 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
+import { AnimatePresence } from "framer-motion";
 
 import appCss from "../styles.css?url";
 import { Toaster } from "@/components/ui/sonner";
@@ -128,7 +129,9 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Outlet />
+      <AnimatePresence mode="wait">
+        <Outlet />
+      </AnimatePresence>
       <Toaster theme="dark" position="bottom-right" richColors />
     </QueryClientProvider>
   );
