@@ -7,6 +7,7 @@ import { motion } from "framer-motion";
 import { ProtectedGate } from "@/components/ProtectedGate";
 import { Navbar } from "@/components/Navbar";
 import { DashboardBackground } from "@/components/DashboardBackground";
+import { ScrapingLoader } from "@/components/ScrapingLoader";
 import { JobCard } from "@/components/JobCard";
 import { api, type Job, type JobsResponse } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
@@ -58,6 +59,8 @@ function DashboardPage() {
 
   const busy = fetchJobs.isPending || sendDigest.isPending || runPipeline.isPending;
   const jobs = jobsData?.jobs ?? [];
+  const hasFetched = jobsData !== null;
+  const isLoading = fetchJobs.isPending;
 
   const filteredJobs = useMemo(() => {
     let list = jobs.slice();
@@ -208,15 +211,8 @@ function DashboardPage() {
 
           {/* Jobs */}
           <section className="mt-6">
-            {fetchJobs.isPending ? (
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                {Array.from({ length: 6 }).map((_, i) => (
-                  <div
-                    key={i}
-                    className="skeleton-shimmer h-[280px] rounded-[12px] border border-border"
-                  />
-                ))}
-              </div>
+            {isLoading ? (
+              <ScrapingLoader key="scraping-loader" />
             ) : errorMsg ? (
               <div
                 className="rounded-[12px] p-5 text-center"
@@ -236,34 +232,32 @@ function DashboardPage() {
                   Retry
                 </button>
               </div>
+            ) : jobs.length === 0 && !hasFetched ? (
+              <div className="flex flex-col items-center py-[60px] text-center">
+                <Sparkles className="h-12 w-12" style={{ color: "#2a2a2a" }} />
+                <p className="mt-3 text-[15px]" style={{ color: "#888" }}>
+                  Fetch jobs to get started
+                </p>
+                <p className="mt-1 text-[13px]" style={{ color: "#555" }}>
+                  Click "Fetch & Score Jobs" above
+                </p>
+              </div>
             ) : jobs.length === 0 ? (
-              jobsData ? (
-                <div className="flex flex-col items-center py-[60px] text-center">
-                  <Inbox className="h-12 w-12" style={{ color: "#2a2a2a" }} />
-                  <p className="mt-3 text-[15px]" style={{ color: "#888" }}>
-                    No jobs found
-                  </p>
-                  {user && !user.has_resume && (
-                    <Link
-                      to="/profile"
-                      className="mt-4 rounded-md px-4 py-2 text-[13px] transition"
-                      style={{ border: "1px solid #6366f1", color: "#6366f1" }}
-                    >
-                      Upload Resume First
-                    </Link>
-                  )}
-                </div>
-              ) : (
-                <div className="flex flex-col items-center py-[60px] text-center">
-                  <Sparkles className="h-12 w-12" style={{ color: "#2a2a2a" }} />
-                  <p className="mt-3 text-[15px]" style={{ color: "#888" }}>
-                    Fetch jobs to get started
-                  </p>
-                  <p className="mt-1 text-[13px]" style={{ color: "#555" }}>
-                    Click "Fetch & Score Jobs" above
-                  </p>
-                </div>
-              )
+              <div className="flex flex-col items-center py-[60px] text-center">
+                <Inbox className="h-12 w-12" style={{ color: "#2a2a2a" }} />
+                <p className="mt-3 text-[15px]" style={{ color: "#888" }}>
+                  No jobs found
+                </p>
+                {user && !user.has_resume && (
+                  <Link
+                    to="/profile"
+                    className="mt-4 rounded-md px-4 py-2 text-[13px] transition"
+                    style={{ border: "1px solid #6366f1", color: "#6366f1" }}
+                  >
+                    Upload Resume First
+                  </Link>
+                )}
+              </div>
             ) : (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 {filteredJobs.map((job, i) => (
