@@ -1,3 +1,130 @@
+# 🎯 Job Scout
+
+AI-powered internship tracker that scores jobs against your resume automatically.
+
+<!-- Badges -->
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi) ![Python](https://img.shields.io/badge/Python-3776AB?logo=python) ![React](https://img.shields.io/badge/React-20232A?logo=react) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?logo=postgresql) ![Railway](https://img.shields.io/badge/Railway-000000) ![Vercel](https://img.shields.io/badge/Vercel-000000)
+
+Live demo: https://job-scout-black.vercel.app
+
+## Short description
+Job Scout is a full-stack internship portfolio project that automatically scrapes internship listings from Internshala, scores them against a user’s resume using an LLM, and delivers a personalized daily digest email. It targets students and early-career developers who want a data-driven way to discover internships that match their skills and experience.
+
+## Features
+- 🔍 Automated scraping from Internshala (Selenium + Requests)
+- 🤖 LLM-based resume scoring via Groq API — each job gets a score out of 10
+- 📊 Skills match %, missing skills analysis, and seniority-fit detection
+- 📧 Daily digest email with top-matched internship listings
+- ⚙️ Background pipeline runs automatically at 9 AM IST via APScheduler
+- 🔐 JWT-based authentication with per-user resume upload (multi-user support)
+- 🎨 Polished dark UI with 3D animated background and smooth transitions (Framer Motion + React Three Fiber)
+
+## Architecture
+The pipeline is designed for reliability and extensibility: scraping → scoring → storage → delivery.
+
+```
+Scrape (Selenium + Requests)
+    ↓
+Deduplicate & Normalize
+    ↓
+LLM Score (Groq) ↔ Resume Text Extract (PyMuPDF)
+    ↓
+Store results in PostgreSQL
+    ↓
+Serve via FastAPI (REST) → Frontend (React + Vite)
+    ↓
+Daily digest email scheduler (APScheduler) delivers top matches
+```
+
+## API Endpoints
+
+| Method | Endpoint | Description | Auth |
+|---|---:|---|---:|
+| POST | `/auth/register` | Register a new user | No |
+| POST | `/auth/login` | Obtain JWT token | No |
+| GET | `/auth/me` | Fetch current user profile | Yes |
+| POST | `/auth/upload-resume` | Upload PDF resume (extract text) | Yes |
+| GET | `/jobs?pages=N` | Trigger/preview job scrape pages | Yes |
+| POST | `/send-digest` | Send a digest email to a user | Yes |
+| POST | `/run-pipeline` | Run full scrape → score pipeline (admin) | Yes |
+| GET | `/pipeline/status` | Check last run status | Yes |
+
+## Local development
+
+### Backend
+```bash
+git clone <repo-url>
+cd backend
+python -m venv venv
+# macOS / Linux
+source venv/bin/activate
+# Windows
+# venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env  # fill in values
+uvicorn main:app --reload
+```
+
+Required `.env` variables:
+- `DATABASE_URL`
+- `GROQ_API_KEY`
+- `JWT_SECRET`
+- `EMAIL_USER`
+- `EMAIL_PASS`
+- `FRONTEND_URL`
+
+### Frontend
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+## Deployment
+- Backend: deployed on Railway (live)
+- Frontend: deployed on Vercel (live)
+- CORS configured to allow the frontend origin to access API endpoints
+
+## Project structure
+
+Backend (high level):
+```
+backend/
+├─ main.py
+├─ scraper.py
+├─ scorer.py
+├─ scheduler.py
+├─ models.py
+├─ auth.py
+├─ database.py
+└─ requirements.txt
+```
+
+Frontend (high level):
+```
+frontend/
+├─ src/
+│  ├─ components/
+│  ├─ pages/
+│  ├─ store/
+│  ├─ hooks/
+│  └─ lib/api.ts
+├─ vite.config.ts
+└─ package.json
+```
+
+## What I learned
+- I built a production-grade async API with FastAPI and background scheduling.
+- I integrated LLMs into a data pipeline to score and rank job listings.
+- I designed a multi-user system with JWT authentication and secure resume uploads.
+- I handled web scraping at scale with Selenium, including anti-bot considerations and deduplication.
+- I deployed a full-stack application using Railway (backend) and Vercel (frontend), and configured CORS and environment variables securely.
+- I implemented modern frontend state management with Zustand and React Query, and improved UX using Framer Motion and React Three Fiber.
+
+## Built by
+Satvik Kashibhatla — 3rd year BTech CSE
+
+⭐ Star this repo if you found it useful
 # Job Scout
 
 **Intelligent, multi-user job discovery platform with LLM-powered ranking and automated email digests.**
