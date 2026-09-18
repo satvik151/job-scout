@@ -1,6 +1,6 @@
 import { useAuthStore } from "@/store/authStore";
 
-const DEFAULT_API_BASE = "https://web-production-5b114.up.railway.app";
+const DEFAULT_API_BASE = "https://job-scout-backend.onrender.com";
 
 export const API_BASE = import.meta.env.VITE_API_BASE ?? DEFAULT_API_BASE;
 

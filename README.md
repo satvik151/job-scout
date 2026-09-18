@@ -3,7 +3,7 @@
 AI-powered internship tracker that scores jobs against your resume automatically.
 
 <!-- Badges -->
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi) ![Python](https://img.shields.io/badge/Python-3776AB?logo=python) ![React](https://img.shields.io/badge/React-20232A?logo=react) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?logo=postgresql) ![Railway](https://img.shields.io/badge/Railway-000000) ![Vercel](https://img.shields.io/badge/Vercel-000000)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi) ![Python](https://img.shields.io/badge/Python-3776AB?logo=python) ![React](https://img.shields.io/badge/React-20232A?logo=react) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?logo=postgresql) ![Render](https://img.shields.io/badge/Render-46E3B7?logo=render) ![Vercel](https://img.shields.io/badge/Vercel-000000)
 
 Live demo: https://job-scout-black.vercel.app
 
@@ -81,7 +81,7 @@ npm run dev
 ```
 
 ## Deployment
-- Backend: deployed on Railway (live)
+- Backend: deployed on Render (live)
 - Frontend: deployed on Vercel (live)
 - CORS configured to allow the frontend origin to access API endpoints
 
@@ -118,7 +118,7 @@ frontend/
 - I integrated LLMs into a data pipeline to score and rank job listings.
 - I designed a multi-user system with JWT authentication and secure resume uploads.
 - I handled web scraping at scale with Selenium, including anti-bot considerations and deduplication.
-- I deployed a full-stack application using Railway (backend) and Vercel (frontend), and configured CORS and environment variables securely.
+- I deployed a full-stack application using Render (backend), Neon (PostgreSQL), and Vercel (frontend), and configured CORS and environment variables securely.
 - I implemented modern frontend state management with Zustand and React Query, and improved UX using Framer Motion and React Three Fiber.
 
 ## Built by
@@ -373,27 +373,39 @@ Result Range: 0–10
 
 ### Phase 6: Database & Deployment (In Progress)
 - Migrate from SQLite → PostgreSQL for production
-- Deploy to Railway.app (CI/CD pipeline)
+- Deploy the backend to Render with a Neon PostgreSQL database (CI/CD pipeline)
 - Add database backups & monitoring
 
 ### Frontend Deployment
 - Deploy the frontend from `frontend/` to Vercel
-- Set `VITE_API_BASE` on Vercel to your Railway API URL
-- Add your Vercel production URL to `FRONTEND_URL` on Railway for CORS
+- Set `VITE_API_BASE` on Vercel to your Render API URL
+- Add your Vercel production URL to Render's `FRONTEND_URL` environment variable for CORS
 - Keep the Vercel rewrite config so client-side routes like `/dashboard` work on refresh
 
 ---
 
-## Vercel + Railway Setup
+## Vercel + Render Setup
 
 1. In Vercel, import the `frontend/` folder as the project root.
 2. Set the build command to `npm run build` and the output directory to `dist/client`.
 3. Add an environment variable:
-  - `VITE_API_BASE=https://web-production-5b114.up.railway.app`
-4. In Railway, set `FRONTEND_URL` to your Vercel production domain, for example:
+  - `VITE_API_BASE=https://job-scout-backend.onrender.com`
+4. In Render, set `FRONTEND_URL` to your Vercel production domain, for example:
   - `https://job-scout.vercel.app`
-5. Redeploy Railway after changing `FRONTEND_URL`.
+5. Redeploy Render after changing `FRONTEND_URL`.
 6. Use `frontend/vercel.json` so direct links like `/login` and `/dashboard` resolve correctly.
+
+### Neon + Render Backend Setup
+
+1. Create a free project at [Neon](https://neon.tech) and copy its pooled PostgreSQL connection string.
+2. In Render, create a Web Service from this repository, or use a Blueprint if a `render.yaml` is present.
+3. Set the build command to `pip install -r requirements.txt` and the start command to:
+   ```bash
+   uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+   ```
+4. Add `DATABASE_URL` using the Neon connection string, along with `SECRET_KEY`, `GROQ_API_KEY`, `RESEND_API_KEY`, `SENDER_EMAIL`, `DIGEST_EMAIL`, and `FRONTEND_URL`.
+5. The application accepts both `postgres://` and `postgresql://` connection strings and normalizes the former to `postgresql://`, which is required by SQLAlchemy's PostgreSQL driver.
+6. After deployment, confirm the Render logs show `Using database backend: PostgreSQL` and that the `/` endpoint responds successfully.
 
 ## Troubleshooting
 
