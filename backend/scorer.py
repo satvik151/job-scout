@@ -202,7 +202,7 @@ JSON must have exactly these fields:
     try:
         api_start = time.perf_counter()
         message = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=300,
