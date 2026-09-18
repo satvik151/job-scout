@@ -202,13 +202,16 @@ JSON must have exactly these fields:
     try:
         api_start = time.perf_counter()
         message = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model="qwen/qwen3.8-27b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=300,
+            max_tokens=250,
+            response_format={"type": "json_object"},
         )
         api_elapsed = time.perf_counter() - api_start
         response_text = message.choices[0].message.content
+        if not response_text:
+            raise ValueError("Groq returned an empty response")
         logger.debug(f"Groq call for '{job.get('title')}' took {api_elapsed:.2f}s")
     except Exception as e:
         logger.error(f"Groq API error for job '{job.get('title')}': {e}")
